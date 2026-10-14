@@ -1,0 +1,45 @@
+name: Publish APK
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run protocol and navigation tests
+        run: ./test.sh
+      - name: Verify tag and packaged APK
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import os, re, xml.etree.ElementTree as ET
+          version = ET.parse('AndroidManifest.xml').getroot().get('{http://schemas.android.com/apk/res/android}versionName')
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Invalid manifest version'
+          assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'Tag must match manifest version'
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('BRIDGE_RELEASE_VERSION=' + version + '\n')
+          PYCODE
+          cd "release/${GITHUB_REF_NAME#v}"
+          sha256sum --check SHA256SUMS
+      - name: Publish signed APK and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "release/$BRIDGE_RELEASE_VERSION/DiPlayClusterBridge-$BRIDGE_RELEASE_VERSION.apk" \
+            "release/$BRIDGE_RELEASE_VERSION/SHA256SUMS" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "CarPlay 仪表桥接 $BRIDGE_RELEASE_VERSION" \
+            --notes-file "release/$BRIDGE_RELEASE_VERSION/NOTES.md"

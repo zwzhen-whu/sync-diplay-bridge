@@ -1,0 +1,14 @@
+.DS_Store
+/build/
+/work/
+/inspection/
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+*.apk.idsig
+*.apk
+!release/*/*.apk
+.env
+.env.*

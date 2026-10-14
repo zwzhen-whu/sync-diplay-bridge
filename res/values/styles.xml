@@ -1,0 +1,15 @@
+<resources>
+    <style name="BridgeTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#101720</item>
+        <item name="android:colorBackground">#101720</item>
+        <item name="android:statusBarColor">#101720</item>
+        <item name="android:navigationBarColor">#101720</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:textColorPrimary">#E8EDF5</item>
+        <item name="android:textColorSecondary">#AAB7C7</item>
+        <item name="android:colorAccent">#61D9BB</item>
+        <item name="android:colorControlNormal">#91A2B6</item>
+        <item name="android:colorControlActivated">#61D9BB</item>
+        <item name="android:colorButtonNormal">#2A3A4D</item>
+    </style>
+</resources>

@@ -1,0 +1,302 @@
+package com.local.diplay.clusterbridge;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.appwidget.AppWidgetHost;
+import android.appwidget.AppWidgetHostView;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProviderInfo;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.SystemClock;
+import android.util.Log;
+import android.view.View;
+import android.widget.ImageView;
+import android.widget.RemoteViews;
+import android.widget.TextView;
+import java.security.MessageDigest;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/** Standalone public-widget host and cluster broadcast adapter. */
+public final class BridgeService extends Service {
+    static final String SOURCE = "com.shihab.diplay";
+    static final String CLUSTER = "com.baidu.xiaoduos.instrumentcluster";
+    static final ComponentName PROVIDER = new ComponentName(SOURCE, "com.shilapi.xcertplay.NavigationWidget");
+    private static final String CLUSTER_SHA256 = "7FBAE817B7DB24642D8959C347B561C003C6CFDE2CB10F909C932F21A4D6D804";
+    private static final String ASSISTANT_SHA1 = "363F5D52145070AC479B268C3EC817B371AAD331";
+    private static final long NAV_TIMEOUT = 5000;
+    private static final long HOST_RETRY_INTERVAL = 10000;
+    private final Handler handler = new Handler();
+    private SharedPreferences preferences;
+    private AppWidgetHost host;
+    private AppWidgetHostView widgetView;
+    private Resources sourceResources;
+    private final Map<String, int[]> arrows = new LinkedHashMap<>();
+    private String sourceVersion = "未知", reason = "等待小组件数据", distance = "", road = "", turn;
+    private String receiverError, lastMusic;
+    private Integer meters;
+    private Protocol.Song song;
+    private boolean connected, ownedNav, ownedMusic;
+    private long lastUpdate;
+    private long lastHostAttempt;
+    private int updates, navSent, musicSent;
+    private NavigationLogReader navigationLogs;
+    private String outputRoad = "", roadSource = "暂无";
+    private boolean destroyed;
+    private final Runnable logChanged = () -> { if (!destroyed) { forward(); publish(); } };
+
+    private final BroadcastReceiver packages = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            String name = intent.getData() == null ? "" : intent.getData().getSchemeSpecificPart();
+            if (SOURCE.equals(name) || CLUSTER.equals(name) || "org.savior.sync".equals(name)) {
+                clearNav(); clearMusic(); connected = false; song = null; lastUpdate = 0;
+                if (navigationLogs != null) navigationLogs.stop();
+                navigationLogs = new NavigationLogReader(BridgeService.this, handler, logChanged);
+                navigationLogs.ensureStarted();
+                receiverError = validateReceiver(); initializeHost();
+            }
+        }
+    };
+
+    private final Runnable watchdog = new Runnable() {
+        public void run() {
+            if (navigationLogs != null) navigationLogs.ensureStarted();
+            // At boot the provider or widget service may not yet be available.
+            if (widgetView == null && SystemClock.elapsedRealtime() - lastHostAttempt >= HOST_RETRY_INTERVAL) {
+                receiverError = validateReceiver(); initializeHost();
+            }
+            if (lastUpdate > 0 && meters != null && SystemClock.elapsedRealtime() - lastUpdate > NAV_TIMEOUT) {
+                meters = null; turn = null; reason = "导航小组件超过 5 秒未更新，停止导航转发"; clearNav();
+            }
+            if (!preferences.getBoolean("nav", false)) clearNav();
+            if (!preferences.getBoolean("music", false)) clearMusic();
+            publish(); handler.postDelayed(this, 1000);
+        }
+    };
+
+    public void onCreate() {
+        super.onCreate(); preferences = getSharedPreferences("bridge", MODE_PRIVATE);
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        manager.createNotificationChannel(new NotificationChannel("bridge", "CarPlay 仪表桥接", NotificationManager.IMPORTANCE_LOW));
+        PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        startForeground(1, new Notification.Builder(this, "bridge").setSmallIcon(android.R.drawable.ic_menu_directions)
+            .setContentTitle("CarPlay 仪表桥接正在读取小组件").setContentText("打开查看状态或停止转发").setContentIntent(open).build());
+        receiverError = validateReceiver();
+        navigationLogs = new NavigationLogReader(this, handler, logChanged);
+        navigationLogs.ensureStarted();
+        IntentFilter filter = new IntentFilter(); filter.addAction(Intent.ACTION_PACKAGE_REPLACED); filter.addAction(Intent.ACTION_PACKAGE_REMOVED); filter.addAction(Intent.ACTION_PACKAGE_ADDED); filter.addDataScheme("package");
+        registerReceiver(packages, filter);
+        initializeHost(); handler.post(watchdog);
+    }
+
+    public int onStartCommand(Intent intent, int flags, int id) {
+        if (widgetView == null) initializeHost();
+        if (!preferences.getBoolean("nav", false)) clearNav();
+        if (!preferences.getBoolean("music", false)) clearMusic();
+        forward(); publish();
+        return START_NOT_STICKY;
+    }
+
+    @SuppressWarnings("deprecation")
+    private String signature(String name, String algorithm) throws Exception {
+        PackageInfo info = getPackageManager().getPackageInfo(name, PackageManager.GET_SIGNATURES);
+        if (info.signatures == null || info.signatures.length != 1) return "";
+        byte[] bytes = MessageDigest.getInstance(algorithm).digest(info.signatures[0].toByteArray());
+        StringBuilder result = new StringBuilder();
+        for (byte b : bytes) result.append(String.format(java.util.Locale.ROOT, "%02X", b & 255));
+        return result.toString();
+    }
+
+    private String validateReceiver() {
+        try {
+            if (!CLUSTER_SHA256.equals(signature(CLUSTER, "SHA-256"))) return "仪表应用签名变化，禁止转发";
+            if (!ASSISTANT_SHA1.equals(signature("org.savior.sync", "SHA-1"))) return "车机助手签名变化或未安装，禁止转发";
+            return null;
+        } catch (Exception e) { return "无法验证仪表/车机助手：" + e.getClass().getSimpleName(); }
+    }
+
+    private void initializeHost() {
+        lastHostAttempt = SystemClock.elapsedRealtime();
+        if (host != null) host.stopListening();
+        widgetView = null; arrows.clear(); meters = null; turn = null;
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(SOURCE, 0); sourceVersion = info.versionName;
+            sourceResources = getPackageManager().getResourcesForApplication(SOURCE);
+            for (String[] arrow : Protocol.ARROWS) {
+                int id = sourceResources.getIdentifier(arrow[0], "drawable", SOURCE);
+                if (id == 0) throw new IllegalStateException("DiPlay 缺少箭头资源 " + arrow[0]);
+                arrows.put(arrow[0], pixels(sourceResources.getDrawable(id, null)));
+            }
+            for (String name : new String[]{"widget_arrow", "widget_distance", "widget_road", "widget_song"}) {
+                if (sourceResources.getIdentifier(name, "id", SOURCE) == 0) throw new IllegalStateException("DiPlay 小组件接口变化：" + name);
+            }
+            host = new AppWidgetHost(this, 4201) {
+                protected AppWidgetHostView onCreateView(Context context, int widgetId, AppWidgetProviderInfo widgetInfo) {
+                    return new AppWidgetHostView(context) {
+                        public void updateAppWidget(RemoteViews views) {
+                            super.updateAppWidget(views);
+                            if (views != null) readWidget(this);
+                        }
+                    };
+                }
+            };
+            AppWidgetManager manager = AppWidgetManager.getInstance(this);
+            int id = preferences.getInt("widget", -1);
+            AppWidgetProviderInfo bound = id == -1 ? null : manager.getAppWidgetInfo(id);
+            if (bound != null && !PROVIDER.equals(bound.provider)) { host.deleteAppWidgetId(id); id = -1; }
+            if (id == -1) { id = host.allocateAppWidgetId(); preferences.edit().putInt("widget", id).commit(); }
+            for (int previous : host.getAppWidgetIds()) if (previous != id) host.deleteAppWidgetId(previous);
+            if (manager.getAppWidgetInfo(id) == null && !manager.bindAppWidgetIdIfAllowed(id, PROVIDER)) {
+                reason = "尚未授权小组件，请点授权按钮或执行文档中的 ADB grantbind"; publish(); return;
+            }
+            AppWidgetProviderInfo provider = manager.getAppWidgetInfo(id);
+            if (provider == null) throw new IllegalStateException("DiPlay 导航小组件未注册");
+            Bundle options = new Bundle(); options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 400); options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 150);
+            options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 700); options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 220);
+            manager.updateAppWidgetOptions(id, options);
+            widgetView = host.createView(this, id, provider); host.startListening();
+        } catch (Exception e) {
+            clearNav(); reason = "小组件读取失败：" + e.getMessage(); Log.e("DiPlayBridge", reason, e); publish();
+        }
+    }
+
+    private static int[] pixels(Drawable drawable) {
+        if (drawable == null) throw new IllegalStateException("箭头为空");
+        Bitmap bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888);
+        android.graphics.Rect previous = new android.graphics.Rect(drawable.getBounds());
+        drawable.setBounds(0, 0, 64, 64); drawable.draw(new Canvas(bitmap)); drawable.setBounds(previous);
+        int[] pixels = new int[4096]; bitmap.getPixels(pixels, 0, 64, 0, 0, 64, 64); bitmap.recycle(); return pixels;
+    }
+
+    private String recognize(ImageView image) {
+        if (image == null || image.getVisibility() != View.VISIBLE || image.getColorFilter() != null) return null;
+        int[] actual = pixels(image.getDrawable()); String matched = null;
+        for (String[] arrow : Protocol.ARROWS) {
+            if (Arrays.equals(actual, arrows.get(arrow[0]))) {
+                if (matched != null && !matched.equals(arrow[1])) return null;
+                matched = arrow[1];
+            }
+        }
+        return matched;
+    }
+
+    private View view(View root, String name) { return root.findViewById(sourceResources.getIdentifier(name, "id", SOURCE)); }
+    private String text(View root, String name) {
+        View child = view(root, name);
+        if (!(child instanceof TextView)) throw new IllegalStateException("缺少文本 " + name);
+        return child.getVisibility() == View.VISIBLE ? ((TextView) child).getText().toString() : "";
+    }
+
+    private void readWidget(View root) {
+        try {
+            distance = text(root, "widget_distance"); road = text(root, "widget_road");
+            song = Protocol.song(text(root, "widget_song")); connected = !"DiPlay".equals(distance);
+            lastUpdate = SystemClock.elapsedRealtime(); updates++; meters = Protocol.meters(distance);
+            View image = view(root, "widget_arrow"); turn = image instanceof ImageView ? recognize((ImageView) image) : null;
+            if (!connected) { meters = null; turn = null; song = null; if (navigationLogs != null) navigationLogs.clearState(); reason = "DiPlay 未连接 CarPlay"; }
+            else if ("CarPlay".equals(distance)) { meters = null; turn = null; reason = "CarPlay 已连接，暂无导航指令"; }
+            else if (meters == null || !Protocol.knownTurn(turn)) { meters = null; turn = null; reason = "无法识别当前箭头或距离，停止导航转发"; }
+            else reason = "已读取真实导航指令（距离为小组件显示值）";
+            forward(); publish();
+            Log.i("DiPlayBridge", "widget update=" + updates + " connected=" + connected + " turn=" + turn + " meters=" + meters + " song=" + (song != null) + " navSent=" + navSent + " musicSent=" + musicSent);
+        } catch (Exception e) {
+            meters = null; turn = null; song = null; clearNav(); clearMusic();
+            reason = "小组件数据解析失败：" + e.getMessage(); publish(); Log.e("DiPlayBridge", reason, e);
+        }
+    }
+
+    private Intent clusterIntent(String action) { return new Intent(action).setPackage(CLUSTER); }
+
+    private void forward() {
+        if (receiverError != null) { clearNav(); clearMusic(); return; }
+        boolean fresh = lastUpdate > 0 && SystemClock.elapsedRealtime() - lastUpdate <= NAV_TIMEOUT;
+        if (preferences.getBoolean("nav", false) && connected && fresh && meters != null && Protocol.knownTurn(turn)) {
+            if (!ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "TRUE")); ownedNav = true; }
+            outputRoad = Protocol.roadName(road); roadSource = "DiPlay 小组件";
+            if (outputRoad.isEmpty() && navigationLogs != null) {
+                outputRoad = navigationLogs.state.road(turn, meters, System.currentTimeMillis());
+                roadSource = outputRoad.isEmpty() ? "缺少有效路名" : "DiPlay 导航说明（日志回退）";
+            }
+            outputRoad = Protocol.clusterRoad(outputRoad);
+            sendBroadcast(clusterIntent("com.baidu.car.navi.INFO").putExtra("name", turn).putExtra("distance", meters.intValue()).putExtra("nextRoadName", outputRoad)); navSent++;
+        } else { clearNav(); outputRoad = ""; roadSource = "暂无有效导航转发"; }
+        if (preferences.getBoolean("music", false) && connected && song != null) {
+            String identity = song.text + "\u0001" + song.playing;
+            if (!identity.equals(lastMusic)) {
+                sendMusic(song.text, song.playing); lastMusic = identity; ownedMusic = true;
+            }
+        } else clearMusic();
+    }
+
+    private void sendMusic(String title, boolean playing) {
+        sendBroadcast(clusterIntent("com.baidu.car.radio.notify.PLAY_INFO").putExtra("id", "diplay-widget")
+            .putExtra("title", title).putExtra("artist", "").putExtra("album_name", "").putExtra("source_name", "CarPlay")
+            .putExtra("source_type", 1).putExtra("is_playing", playing)); musicSent++;
+    }
+
+    private void clearNav() {
+        if (ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "FALSE")); ownedNav = false; }
+    }
+    private void clearMusic() {
+        if (ownedMusic) { sendMusic("", false); ownedMusic = false; lastMusic = null; }
+    }
+
+    private void publish() {
+        String age = lastUpdate == 0 ? "尚未收到" : (SystemClock.elapsedRealtime() - lastUpdate) / 1000 + " 秒前";
+        String status = "仪表接口：" + (receiverError == null ? "就绪" : receiverError)
+            + "\n仪表道路：" + (outputRoad.isEmpty() ? "暂无导航" : outputRoad)
+            + "\n距离：" + distance + "\n方向：" + turnLabel(turn)
+            + "\n歌曲：" + (song == null ? "暂无" : song.text + (song.playing ? "（播放）" : "（暂停）"))
+            + "\n\n" + reason
+            + "\n开机自启动：" + (preferences.getBoolean("autostart", true) ? "开启" : "关闭")
+            + (preferences.getString("auto_start_error", "").isEmpty() ? "" : "\n自启动失败：" + preferences.getString("auto_start_error", ""))
+            + "\nDiPlay 版本：" + sourceVersion
+            + "\n小组件更新：" + updates + " 次，最近 " + age
+            + "\n源道路：" + (Protocol.roadName(road).isEmpty() ? "（未提供）" : road)
+            + "\n路名来源：" + roadSource
+            + "\n导航日志：" + (navigationLogs == null ? "未启动" : navigationLogs.status())
+            + "\n导航发送：" + navSent + " 次；音乐发送：" + musicSent + " 次"
+            + "\n仪表实际显示请在车辆停稳时核对。";
+        preferences.edit().putString("status", status).apply();
+    }
+
+    private String turnLabel(String value) {
+        if (value == null) return "暂无指令";
+        switch (value) {
+            case "turn_left": return "左转"; case "turn_right": return "右转";
+            case "turn_left_front": return "向左前方"; case "turn_right_front": return "向右前方";
+            case "turn_left_back": return "向左后方"; case "turn_right_back": return "向右后方";
+            case "turn_back": return "掉头"; case "turn_ring": return "环岛";
+            case "turn_dest": return "到达目的地"; case "turn_front": return "直行";
+            default: return "暂无指令";
+        }
+    }
+
+    public void onDestroy() {
+        destroyed = true;
+        handler.removeCallbacksAndMessages(null); clearNav(); clearMusic();
+        if (navigationLogs != null) navigationLogs.stop();
+        if (host != null) host.stopListening(); unregisterReceiver(packages);
+        preferences.edit().putString("status", "读取服务已停止，转发已关闭。下次打开应用可重新启动。").apply();
+        super.onDestroy();
+    }
+    public IBinder onBind(Intent intent) { return null; }
+}

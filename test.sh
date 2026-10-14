@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+BRIDGE_SOURCE="$(cd "$(dirname "$0")" && pwd)"
+BRIDGE_TESTS="$BRIDGE_SOURCE/build/tests"
+if [ -n "${JAVA_HOME:-}" ]; then
+    BRIDGE_JAVAC="$JAVA_HOME/bin/javac"
+    BRIDGE_JAVA="$JAVA_HOME/bin/java"
+else
+    BRIDGE_JAVAC=javac
+    BRIDGE_JAVA=java
+fi
+mkdir -p "$BRIDGE_TESTS"
+"$BRIDGE_JAVAC" --release 8 -encoding UTF-8 -d "$BRIDGE_TESTS"     "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/Protocol.java"     "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/NavigationLogState.java"     "$BRIDGE_SOURCE/tests/ProtocolTest.java" "$BRIDGE_SOURCE/tests/NavigationLogTest.java"
+"$BRIDGE_JAVA" -classpath "$BRIDGE_TESTS" com.local.diplay.clusterbridge.ProtocolTest
+"$BRIDGE_JAVA" -classpath "$BRIDGE_TESTS" com.local.diplay.clusterbridge.NavigationLogTest
