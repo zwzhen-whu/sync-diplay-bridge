@@ -110,7 +110,7 @@ export BRIDGE_KEY_PASSWORD='your-key-password'
 
 ## 下载与发布验证
 
-[v0.1.7 发布页](https://github.com/zwzhen-hnu/sync-diplay-/releases/tag/v0.1.7)提供 [APK 安装包](https://github.com/zwzhen-hnu/sync-diplay-/releases/download/v0.1.7/DiPlayClusterBridge-0.1.7.apk)和 `SHA256SUMS`。发布文件与原测试车机安装的 0.1.7 APK 完全一致，沿用 0.1.5 的签名，可覆盖更新。历史版本：[v0.1.5](https://github.com/zwzhen-hnu/sync-diplay-/releases/tag/v0.1.5)。
+[v0.1.7 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.7/DiPlayClusterBridge-0.1.7.apk)和 `SHA256SUMS`。发布文件与原测试车机安装的 0.1.7 APK 完全一致，沿用 0.1.5 的签名，可覆盖更新。历史版本：[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
 
 ```sh
 # 在下载 APK 和 SHA256SUMS 的目录中核对文件
