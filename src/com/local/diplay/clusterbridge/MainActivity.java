@@ -53,12 +53,17 @@ public final class MainActivity extends Activity {
         autostart.setOnCheckedChangeListener((button, checked) -> preferences.edit().putBoolean("autostart", checked).apply());
         CheckBox nav = new CheckBox(this); nav.setText("转发 CarPlay 导航箭头、距离和道路");
         nav.setChecked(preferences.getBoolean("nav", false)); body.addView(nav);
+        CheckBox remaining = new CheckBox(this); remaining.setText("林肯 SYNC+：剩余时间与里程（实验性）");
+        remaining.setChecked(preferences.getBoolean("lincoln_remaining", false)); body.addView(remaining);
+        remaining.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("lincoln_remaining", checked).apply(); startReader(); });
+        TextView remainingHint = label("默认关闭，需同时开启导航转发。仅转发 DiPlay 提供的剩余数据，林肯仪表显示尚待实车验证。", 15, "#91A2B6");
+        remainingHint.setPadding(0, dp(4), 0, dp(8)); body.addView(remainingHint);
         CheckBox music = new CheckBox(this); music.setText("转发 CarPlay 歌曲文字和播放状态");
         music.setChecked(preferences.getBoolean("music", false)); body.addView(music);
         CheckBox autoEnter = new CheckBox(this); autoEnter.setText("连接后停留在 DiPlay 时自动进入 CarPlay");
         autoEnter.setChecked(preferences.getBoolean("auto_enter", false)); body.addView(autoEnter);
         autoEnter.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("auto_enter", checked).apply(); startReader(); });
-        for (CheckBox check : new CheckBox[]{autostart, nav, music, autoEnter}) { check.setTextSize(18); check.setTextColor(Color.parseColor("#E8EDF5")); }
+        for (CheckBox check : new CheckBox[]{autostart, nav, remaining, music, autoEnter}) { check.setTextSize(18); check.setTextColor(Color.parseColor("#E8EDF5")); }
         nav.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("nav", checked).apply(); startReader(); });
         music.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("music", checked).apply(); startReader(); });
         TextView entryHint = label("自动进入默认关闭，需授权使用情况访问。连接后 30 秒内若退回 DiPlay 入口页（含设置页），最多补跳转一次；切到其他应用后不再拉回。", 15, "#91A2B6");
@@ -90,7 +95,7 @@ public final class MainActivity extends Activity {
         limits.setPadding(0, dp(12), 0, 0); body.addView(limits);
         ScrollView statusScroll = new ScrollView(this); statusScroll.setBackground(panel());
         LinearLayout statusBody = new LinearLayout(this); statusBody.setOrientation(LinearLayout.VERTICAL); statusBody.setPadding(dp(20), dp(14), dp(20), dp(18));
-        statusBody.addView(label("运行状态 · 0.1.7", 20, "#61D9BB"));
+        statusBody.addView(label("运行状态 · 0.1.8", 20, "#61D9BB"));
         status = label("正在读取…", 18, "#E8EDF5"); status.setPadding(0, dp(10), 0, 0); status.setLineSpacing(dp(3), 1); status.setTextIsSelectable(true);
         statusBody.addView(status); statusScroll.addView(statusBody);
         columns.addView(statusScroll, new LinearLayout.LayoutParams(0, -1, 0.56f));

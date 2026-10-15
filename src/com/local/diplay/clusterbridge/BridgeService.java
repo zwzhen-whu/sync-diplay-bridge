@@ -18,6 +18,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.drawable.Drawable;
@@ -31,7 +32,10 @@ import android.widget.ImageView;
 import android.widget.RemoteViews;
 import android.widget.TextView;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -61,6 +65,11 @@ public final class BridgeService extends Service {
     private NavigationLogReader navigationLogs;
     private String outputRoad = "", roadSource = "暂无";
     private final MusicDelivery musicDelivery = new MusicDelivery();
+    private final RemainingDelivery remainingDelivery = new RemainingDelivery();
+    private final List<RemainingTrip.Formats> remainingFormats = new ArrayList<>();
+    private RemainingTrip remainingTrip;
+    private String widgetEta = "";
+    private int remainingSent;
     private CarPlayAutoEntry autoEntry;
     private boolean destroyed;
     private final Runnable logChanged = () -> { if (!destroyed) { forward(); publish(); } };
@@ -141,9 +150,11 @@ public final class BridgeService extends Service {
         lastHostAttempt = SystemClock.elapsedRealtime();
         if (host != null) host.stopListening();
         widgetView = null; arrows.clear(); meters = null; turn = null;
+        remainingTrip = null; widgetEta = ""; remainingFormats.clear();
         try {
             PackageInfo info = getPackageManager().getPackageInfo(SOURCE, 0); sourceVersion = info.versionName;
             sourceResources = getPackageManager().getResourcesForApplication(SOURCE);
+            initializeRemainingFormats();
             for (String[] arrow : Protocol.ARROWS) {
                 int id = sourceResources.getIdentifier(arrow[0], "drawable", SOURCE);
                 if (id == 0) throw new IllegalStateException("DiPlay 缺少箭头资源 " + arrow[0]);
@@ -163,10 +174,16 @@ public final class BridgeService extends Service {
                 }
             };
             AppWidgetManager manager = AppWidgetManager.getInstance(this);
-            int id = preferences.getInt("widget", -1);
+            int savedId = preferences.getInt("widget", -1);
+            // Uninstalling DiPlay removes the system-side widget, but our preference
+            // survives. An absent ID cannot be bound again; allocate a new host ID.
+            int id = WidgetBindingIds.reusable(savedId, host.getAppWidgetIds());
             AppWidgetProviderInfo bound = id == -1 ? null : manager.getAppWidgetInfo(id);
             if (bound != null && !PROVIDER.equals(bound.provider)) { host.deleteAppWidgetId(id); id = -1; }
-            if (id == -1) { id = host.allocateAppWidgetId(); preferences.edit().putInt("widget", id).commit(); }
+            if (id == -1) {
+                id = host.allocateAppWidgetId(); preferences.edit().putInt("widget", id).commit();
+                Log.i("DiPlayBridge", "widget ID allocated=" + id + " previous=" + savedId);
+            }
             for (int previous : host.getAppWidgetIds()) if (previous != id) host.deleteAppWidgetId(previous);
             if (manager.getAppWidgetInfo(id) == null && !manager.bindAppWidgetIdIfAllowed(id, PROVIDER)) {
                 reason = "尚未授权小组件，请点授权按钮或执行文档中的 ADB grantbind"; publish(); return;
@@ -209,9 +226,43 @@ public final class BridgeService extends Service {
         return child.getVisibility() == View.VISIBLE ? ((TextView) child).getText().toString() : "";
     }
 
+    private String sourceString(Resources resources, String name) {
+        int id = resources.getIdentifier(name, "string", SOURCE);
+        return id == 0 ? null : resources.getString(id);
+    }
+
+    private void initializeRemainingFormats() throws PackageManager.NameNotFoundException {
+        // DiPlay can select its language independently of the head unit. All templates
+        // still come from the installed APK, including fallback resources for each locale.
+        Context sourceContext = createPackageContext(SOURCE, 0);
+        for (String locale : new String[]{"", "en", "zh-CN", "zh-TW", "ar", "ja", "ru", "uk", "es"}) {
+            Configuration config = new Configuration(sourceResources.getConfiguration());
+            if (!locale.isEmpty()) config.setLocale(Locale.forLanguageTag(locale));
+            Resources resources = sourceContext.createConfigurationContext(config).getResources();
+            remainingFormats.add(new RemainingTrip.Formats(sourceString(resources, "widget_distance_meters"),
+                sourceString(resources, "widget_distance_km_decimal"), sourceString(resources, "widget_distance_km"),
+                sourceString(resources, "widget_minutes"), sourceString(resources, "widget_hours_minutes")));
+        }
+    }
+
+    private RemainingTrip readRemainingTrip(String text) {
+        for (RemainingTrip.Formats format : remainingFormats) {
+            RemainingTrip value = format.parse(text);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    private String optionalText(View root, String name) {
+        View child = view(root, name);
+        return child instanceof TextView && child.getVisibility() == View.VISIBLE ? ((TextView) child).getText().toString() : "";
+    }
+
     private void readWidget(View root) {
         try {
             distance = text(root, "widget_distance"); road = text(root, "widget_road");
+            widgetEta = optionalText(root, "widget_eta");
+            remainingTrip = readRemainingTrip(widgetEta);
             song = Protocol.song(text(root, "widget_song")); connected = !"DiPlay".equals(distance);
             lastUpdate = SystemClock.elapsedRealtime(); updates++; meters = Protocol.meters(distance);
             View image = view(root, "widget_arrow"); turn = image instanceof ImageView ? recognize((ImageView) image) : null;
@@ -222,6 +273,7 @@ public final class BridgeService extends Service {
             forward(); updateAutoEntry(); publish();
             Log.i("DiPlayBridge", "widget update=" + updates + " connected=" + connected + " turn=" + turn + " meters=" + meters + " song=" + (song != null) + " navSent=" + navSent + " musicSent=" + musicSent);
         } catch (Exception e) {
+            remainingTrip = null; widgetEta = "";
             meters = null; turn = null; song = null; connected = false; clearNav(); clearMusic(); updateAutoEntry();
             reason = "小组件数据解析失败：" + e.getMessage(); publish(); Log.e("DiPlayBridge", reason, e);
         }
@@ -241,6 +293,7 @@ public final class BridgeService extends Service {
             }
             outputRoad = Protocol.clusterRoad(outputRoad);
             sendBroadcast(clusterIntent("com.baidu.car.navi.INFO").putExtra("name", turn).putExtra("distance", meters.intValue()).putExtra("nextRoadName", outputRoad)); navSent++;
+            forwardRemaining(true);
         } else { clearNav(); outputRoad = ""; roadSource = "暂无有效导航转发"; }
         forwardMusic();
     }
@@ -281,7 +334,19 @@ public final class BridgeService extends Service {
         sendBroadcast(musicIntent(title, playing)); musicSent++;
     }
 
+    private void forwardRemaining(boolean activeNavigation) {
+        RemainingDelivery.Action action = remainingDelivery.next(preferences.getBoolean("lincoln_remaining", false), activeNavigation, remainingTrip);
+        if (action == RemainingDelivery.Action.NONE) return;
+        boolean send = action == RemainingDelivery.Action.SEND;
+        // The OEM receiver requires both integer fields: meters and seconds, never minutes.
+        sendBroadcast(clusterIntent("com.baidu.car.navi.REMAIN")
+            .putExtra("remainDistance", send ? remainingTrip.meters : 0)
+            .putExtra("remainTime", send ? remainingTrip.seconds : 0));
+        remainingSent++;
+    }
+
     private void clearNav() {
+        forwardRemaining(false);
         if (ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "FALSE")); ownedNav = false; }
     }
     private void clearMusic() {
@@ -296,6 +361,9 @@ public final class BridgeService extends Service {
             + "\n距离：" + distance + "\n方向：" + turnLabel(turn)
             + "\n歌曲：" + (song == null ? "暂无" : song.text + (song.playing ? "（播放）" : "（暂停）"))
             + "\n音乐同步：首次读取及歌曲变化时推送"
+            + "\n林肯剩余信息：" + (!preferences.getBoolean("lincoln_remaining", false) ? "关闭" :
+                !preferences.getBoolean("nav", false) ? "等待开启导航转发" : !ownedNav ? "暂无有效导航" : remainingTrip == null ? "里程/时间缺失或格式不支持" :
+                remainingTrip.meters + " 米 / " + remainingTrip.seconds / 60 + " 分钟（显示取整值）")
             + "\n自动进入 CarPlay：" + (autoEntry == null ? "未启动" : autoEntry.status())
             + "\n\n" + reason
             + "\n开机自启动：" + (preferences.getBoolean("autostart", true) ? "开启" : "关闭")
@@ -303,9 +371,11 @@ public final class BridgeService extends Service {
             + "\nDiPlay 版本：" + sourceVersion
             + "\n小组件更新：" + updates + " 次，最近 " + age
             + "\n源道路：" + (Protocol.roadName(road).isEmpty() ? "（未提供）" : road)
+            + "\n源剩余信息：" + (widgetEta.isEmpty() ? "（未提供）" : widgetEta)
             + "\n路名来源：" + roadSource
             + "\n导航日志：" + (navigationLogs == null ? "未启动" : navigationLogs.status())
             + "\n导航发送：" + navSent + " 次；音乐发送：" + musicSent + " 次"
+            + "\n剩余信息发送：" + remainingSent + " 次（含清除）"
             + "\n仪表实际显示请在车辆停稳时核对。";
         preferences.edit().putString("status", status).apply();
     }

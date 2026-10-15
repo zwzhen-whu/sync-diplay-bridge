@@ -1,6 +1,14 @@
 # Sync+ / DiPlay CarPlay 仪表桥接
 
-包名：`com.local.diplay.clusterbridge`，版本：0.1.7。已在原测试车机安装；最终版本的完整首次冷开机流程尚未再次实测。界面使用深蓝灰背景、浅色文字和绿色开关，左右两栏分别显示设置及运行状态。已删除型号和 Android 8.1 白名单限制，不再根据车型或系统是否为 API 27 拒绝转发；最低系统要求仍为 Android 8.0。仪表应用及车机助手的签名检查保留，签名变化或助手缺失时拒绝转发。其他车型的实际仪表协议兼容性尚未验证。
+包名：`com.local.diplay.clusterbridge`，版本：0.1.8。已在原测试车机覆盖安装，修复 DiPlay 卸载再安装后的读取故障，用户确认歌曲和导航显示正常。新增的林肯剩余信息开关默认关闭，林肯仪表显示尚未实车验证；完整首次冷开机流程也尚未再次实测。界面使用深蓝灰背景、浅色文字和绿色开关，左右两栏分别显示设置及运行状态。已删除型号和 Android 8.1 白名单限制，不再根据车型或系统是否为 API 27 拒绝转发；最低系统要求仍为 Android 8.0。仪表应用及车机助手的签名检查保留，签名变化或助手缺失时拒绝转发。其他车型的实际仪表协议兼容性尚未验证。
+
+## 0.1.8 重装后恢复读取及剩余信息
+
+0.1.8 同时修复 DiPlay 卸载再安装后的读取恢复：卸载会删除系统中的小组件及宿主记录，而桥接私有设置保留旧编号。旧版误把失效编号当作仍已分配，绑定失败后显示“尚未授权小组件”。现在先核对系统返回的本宿主编号清单，失效时重新分配并绑定，仍有效的编号继续复用。现有授权和转发设置保留；仅在小组件授权确实缺失时需要重新授权。
+
+新增默认关闭的“林肯 SYNC+：剩余时间与里程”开关，需同时开启导航转发。通过车机助手配套仪表接收端的 `com.baidu.car.navi.REMAIN` 发送整型 `remainDistance`（米）和 `remainTime`（秒）。数据读取自 DiPlay 小组件已显示的剩余里程/时间，完整且有效时才发送，同一组合不重复发送。关闭或失效后，仅对本应用已发送的数据发一次 `0/0` 重置；仪表是否隐藏零值仍待实测。
+
+该接口存在于本地留存的仪表程序，尚未验证林肯实际显示及各年款兼容性。不会新增音乐周期重发。详细字段、解析规则及验证边界见 [林肯适配说明](docs/LINCOLN_SYNC_PLUS.md)。
 
 ## 工作方式
 
@@ -58,7 +66,7 @@ ADB 安装和绑定：
 
 ```sh
 adb connect <车机IP>:5555
-adb install -r DiPlayClusterBridge-0.1.7.apk
+adb install -r DiPlayClusterBridge-0.1.8.apk
 adb shell appwidget grantbind --package com.local.diplay.clusterbridge --user 0
 adb shell pm grant com.local.diplay.clusterbridge android.permission.READ_LOGS
 adb shell am force-stop com.local.diplay.clusterbridge
@@ -79,7 +87,7 @@ adb uninstall com.local.diplay.clusterbridge
 - 距离是小组件已经取整的显示值，不能恢复原始精确距离。
 - 环岛显示通用环岛箭头，不能恢复第几出口或车道信息。
 - 小组件歌曲是已合并的文字，作为标题转发；艺术家不单独拆分。仪表程序可能截短到 19 个字符。
-- 不转发缺失的经纬度、剩余总路程、到达时间、歌曲进度/时长；仪表接口对缺失字段的默认处理由原程序决定。
+- 不转发缺失的经纬度、到达时刻、歌曲进度/时长。0.1.8 的剩余总路程和剩余时长仅在实验开关开启且数据完整时发送；数值来自小组件显示，已经取整。
 - 音乐显示不等于接管声音输出；本应用不请求音频焦点，也不改变音量、音源或按键控制。
 - 音乐更新依赖 DiPlay 的歌曲/连接状态回调，暂无独立的进程死亡检测。异常退出而没有断开回调时，歌曲可能暂时保留。
 - 两个应用同时向仪表发送信息可能互相覆盖。仪表没有提供可验证的来源仲裁接口，需关闭不使用的转发来源。
@@ -93,7 +101,7 @@ adb uninstall com.local.diplay.clusterbridge
 需要 JDK 17 或更新版本、Google Android SDK 平台 35 和构建工具 36.0.0。应用仍编译为 Java 8 字节码，最低 Android 8.0、目标 Android 9。
 
 ```sh
-# 不依赖 Android SDK 的协议和导航日志测试
+# 不依赖 Android SDK 的协议、导航日志、首次连接及剩余信息测试
 ./test.sh
 
 # 先安装对应的 Android SDK 包，再设置本机路径及自己的签名配置
@@ -110,16 +118,18 @@ export BRIDGE_KEY_PASSWORD='your-key-password'
 
 ## 下载与发布验证
 
-[v0.1.7 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.7/DiPlayClusterBridge-0.1.7.apk)和 `SHA256SUMS`。发布文件与原测试车机安装的 0.1.7 APK 完全一致，沿用 0.1.5 的签名，可覆盖更新。历史版本：[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
+[v0.1.8 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.8)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.8/DiPlayClusterBridge-0.1.8.apk)和 `SHA256SUMS`。发布文件与本次修复后车机安装的 0.1.8 APK 完全一致，沿用 0.1.5/0.1.7 的签名，可覆盖更新并保留配置。历史版本：[v0.1.7](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)、[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
 
 ```sh
 # 在下载 APK 和 SHA256SUMS 的目录中核对文件
 shasum -a 256 -c SHA256SUMS
 ```
 
-仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行三组纯 Java 测试，校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
+仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行 `test.sh` 中的纯 Java 测试（当前源码为五组），校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
 
 0.1.7 已通过构建、协议/导航/启动行为回归和签名检查。约 94 秒实车观察中，两首不同歌曲各推送一次，没有重复歌曲状态或空标题回填；后台更新后约 5.2 秒自动进入 CarPlay。首次冷开机退回入口的真实时序已纳入回归，最终版本完整首次冷开机及其他车型、系统版本、休眠恢复仍需实测。
+
+0.1.8 的五组回归测试、签名及安装包完整性检查通过。现车原有小组件授权仍在，但系统已删除 DiPlay 卸载前的绑定和宿主记录；修复版覆盖安装后只分配一次新编号，持续收到导航更新，用户确认歌曲和导航正常。原有四个开关及权限保留，林肯实验开关保持关闭。林肯实际显示、零值清除表现、完整首次冷开机及其他固件的恢复行为仍需实测。
 
 ## 本次确认的接收协议
 
@@ -127,6 +137,7 @@ shasum -a 256 -c SHA256SUMS
 
 - `com.baidu.car.navi.STATE`：字符串 `state=TRUE/FALSE`。
 - `com.baidu.car.navi.INFO`：字符串 `name` / `nextRoadName`，整型 `distance`，单位米。
+- `com.baidu.car.navi.REMAIN`：整型 `remainDistance`（剩余米数）/ `remainTime`（剩余秒数）；0.1.8 实验开关默认关闭，林肯显示待验证。
 - `com.baidu.car.radio.notify.PLAY_INFO`：`title` / `artist` / `album_name` / `source_name`，整型 `source_type=1`，布尔 `is_playing`。
 
 导航转向令牌采用该车已安装程序实际支持的白名单。仪表程序对 `org.savior.sync` 已安装包进行签名检查；本应用没有伪装该包、绕过签名或修改接收程序。
