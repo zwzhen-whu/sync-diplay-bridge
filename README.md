@@ -1,12 +1,12 @@
 # Sync+ / DiPlay CarPlay 仪表桥接
 
-包名：`com.local.diplay.clusterbridge`，版本：0.1.5。界面使用深蓝灰背景、浅色文字和绿色开关，左右两栏分别显示设置及运行状态。已删除型号和 Android 8.1 白名单限制，不再根据车型或系统是否为 API 27 拒绝转发；最低系统要求仍为 Android 8.0。仪表应用及车机助手的签名检查保留，签名变化或助手缺失时拒绝转发。其他车型的实际仪表协议兼容性尚未验证。
+包名：`com.local.diplay.clusterbridge`，版本：0.1.7。已在原测试车机安装；最终版本的完整首次冷开机流程尚未再次实测。界面使用深蓝灰背景、浅色文字和绿色开关，左右两栏分别显示设置及运行状态。已删除型号和 Android 8.1 白名单限制，不再根据车型或系统是否为 API 27 拒绝转发；最低系统要求仍为 Android 8.0。仪表应用及车机助手的签名检查保留，签名变化或助手缺失时拒绝转发。其他车型的实际仪表协议兼容性尚未验证。
 
 ## 工作方式
 
 DiPlay 的标准 `NavigationWidget` → Android `AppWidgetHost` → 本应用读取小组件中实际呈现的箭头、距离、道路、歌曲 → 定向广播到现有仪表程序。
 
-本应用自行实现桥接代码，没有修改或重新打包 DiPlay，没有复制其私有认证材料，也没有替换仪表系统应用。没有网络、无障碍、通知读取或 root 权限。声明前台服务、接收开机广播和日志读取权限；小组件绑定、日志读取需单独通过 ADB 授权。
+本应用自行实现桥接代码，没有修改或重新打包 DiPlay，没有复制其私有认证材料，也没有替换仪表系统应用。没有网络、无障碍、通知读取或 root 权限。声明前台服务、接收开机广播、日志读取和使用情况访问权限；小组件绑定、日志读取需单独通过 ADB 授权，使用情况访问只供默认关闭的自动进入功能使用。
 
 0.1.4 增加路名回退：本次百度地图的 iAP2 数据未提供专用的“当前路名”和“转向后的路名”字段，但提供了 `0x5202` 参数 2 的完整导航说明，其中包含道路文字。DiPlay 0.2.19 没有把这个说明填入小组件，所以仪表收到空路名，显示为 `null`。
 
@@ -17,6 +17,26 @@ DiPlay 的标准 `NavigationWidget` → Android `AppWidgetHost` → 本应用读
 0.1.5 在本应用私有偏好中缓存解析后的转向说明，覆盖更新后可以恢复。恢复只加载缓存，不恢复“导航有效”的判断；必须重新收到匹配进程、转向编号、方向和距离的新导航状态后才能使用。恢复时拒绝超过 24 小时的说明，导航结束或断开时清除相应缓存。
 
 箭头通过当前安装 DiPlay 的同名 drawable 渲染结果匹配，资源 ID 在运行时读取。DiPlay 后续更新保留这些小组件名称和显示规则时，可以继续使用；接口变化时可能需要更新桥接应用。未知箭头或距离解析失败不会被当成直行指令。导航小组件超过 5 秒不更新时，停止本应用开启的导航。
+
+## 0.1.7 首次连接与歌曲推送
+
+音乐转发开启后，第一次从 DiPlay 小组件读到有效歌曲就推送一次；之后只在歌名或播放/暂停状态实际变化时更新。读取同一首歌不会反复推送；没有周期重发，也没有启动阶段的清空/回填。断开或关闭转发时仍清除本应用开启的音乐显示；重新连接后可推送新的首次歌曲快照。
+
+“连接后停留在 DiPlay 时自动进入 CarPlay”默认关闭。启用并授予使用情况访问后，以 CarPlay 真正连接成功为起点观察 30 秒，连接前的等待不计入这个窗口。等待至少 3 秒，确认 DiPlay 入口 Activity 连续停留约 2 秒后，调用 DiPlay 小组件原有的点击动作，最多请求一次。
+
+首次开机可能先显示 CarPlay、随后又回到 DiPlay 入口。因此首次看到 CarPlay 不会提前结束这 30 秒的检查，仍保留一次回退纠正机会。切到其他应用后，本次连接立即结束检查；窗口结束或已补跳转后，不持续拉回。锁屏、灭屏、权限缺失或无法确认前台时不跳转。
+
+DiPlay 主页和设置页共用 `DiPlayActivity`，外部应用只能识别 Activity，无法精确区分内部页面。若希望新连接后留在 DiPlay 设置页，请关闭自动进入。此功能辅助处理入口停留，不修改 DiPlay 内部的启动逻辑。Android 10 及更新版本还可能限制后台启动界面，当前未实测。
+
+在桥接页面点“授权自动进入 CarPlay”，在系统的“使用情况访问”中允许本应用；定制车机没有授权页面时，可在停稳后用 ADB：
+
+```sh
+adb shell appops set com.local.diplay.clusterbridge GET_USAGE_STATS allow
+```
+
+该授权只用于自动进入，音乐推送不需要它。建议授权并开启后重新连接一次 CarPlay。应用仅在连接窗口内读取本次开机事件，后续增量读取，并在内存保留最新前台状态，避免主页停留超过一分钟后被遗漏；不保存或上传应用使用历史。
+
+本地构建、签名和三组回归测试已通过。现车验证了主页长时间停留后的识别和小组件跳转；实测首次开机中“连接后约 4 秒退回入口”的时序已加入回归。最终版本的完整首次冷开机流程尚未再次实测。导航原有的 5 秒超时行为保留。
 
 ## 使用
 
@@ -38,7 +58,7 @@ ADB 安装和绑定：
 
 ```sh
 adb connect <车机IP>:5555
-adb install -r DiPlayClusterBridge-0.1.5.apk
+adb install -r DiPlayClusterBridge-0.1.7.apk
 adb shell appwidget grantbind --package com.local.diplay.clusterbridge --user 0
 adb shell pm grant com.local.diplay.clusterbridge android.permission.READ_LOGS
 adb shell am force-stop com.local.diplay.clusterbridge
@@ -88,18 +108,18 @@ export BRIDGE_KEY_PASSWORD='your-key-password'
 
 编译输出为 `build/DiPlayClusterBridge.apk`。构建不会自动创建签名密钥；签名私钥不在仓库中。使用其他密钥构建的 APK 无法直接覆盖本仓库发布的 APK。维护者后续发布会继续使用原签名，保留覆盖更新能力。
 
-## 发布与验证
+## 下载与发布验证
 
-[v0.1.5 安装包](https://github.com/zwzhen-hnu/sync-diplay-/releases/tag/v0.1.5)包含 APK 和 `SHA256SUMS`。当前发布的是已在原测试车机上安装验证的 0.1.5 文件，保留深色界面、路名回退和开机自启动；不包含静止时继续保留导航的试验改动。
+[v0.1.7 发布页](https://github.com/zwzhen-hnu/sync-diplay-/releases/tag/v0.1.7)提供 [APK 安装包](https://github.com/zwzhen-hnu/sync-diplay-/releases/download/v0.1.7/DiPlayClusterBridge-0.1.7.apk)和 `SHA256SUMS`。发布文件与原测试车机安装的 0.1.7 APK 完全一致，沿用 0.1.5 的签名，可覆盖更新。历史版本：[v0.1.5](https://github.com/zwzhen-hnu/sync-diplay-/releases/tag/v0.1.5)。
 
 ```sh
 # 在下载 APK 和 SHA256SUMS 的目录中核对文件
 shasum -a 256 -c SHA256SUMS
 ```
 
-仓库中的 `release/0.1.5/` 保存该版已签名 APK、校验文件和发布说明。推送与 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行现有纯 Java 测试，校验 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，也不需要上传签名私钥。源代码压缩包由 GitHub 自动提供。
+仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行三组纯 Java 测试，校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
 
-本地编译、协议测试和签名检查已通过；用户曾确认仪表歌曲、导航箭头、距离及修复后的道路文字正常。其他车型、系统版本与休眠恢复仍需实测。此次发布未重新连接车机。
+0.1.7 已通过构建、协议/导航/启动行为回归和签名检查。约 94 秒实车观察中，两首不同歌曲各推送一次，没有重复歌曲状态或空标题回填；后台更新后约 5.2 秒自动进入 CarPlay。首次冷开机退回入口的真实时序已纳入回归，最终版本完整首次冷开机及其他车型、系统版本、休眠恢复仍需实测。
 
 ## 本次确认的接收协议
 

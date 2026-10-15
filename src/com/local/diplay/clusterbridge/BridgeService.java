@@ -51,7 +51,7 @@ public final class BridgeService extends Service {
     private Resources sourceResources;
     private final Map<String, int[]> arrows = new LinkedHashMap<>();
     private String sourceVersion = "未知", reason = "等待小组件数据", distance = "", road = "", turn;
-    private String receiverError, lastMusic;
+    private String receiverError;
     private Integer meters;
     private Protocol.Song song;
     private boolean connected, ownedNav, ownedMusic;
@@ -60,6 +60,8 @@ public final class BridgeService extends Service {
     private int updates, navSent, musicSent;
     private NavigationLogReader navigationLogs;
     private String outputRoad = "", roadSource = "暂无";
+    private final MusicDelivery musicDelivery = new MusicDelivery();
+    private CarPlayAutoEntry autoEntry;
     private boolean destroyed;
     private final Runnable logChanged = () -> { if (!destroyed) { forward(); publish(); } };
 
@@ -67,7 +69,7 @@ public final class BridgeService extends Service {
         public void onReceive(Context context, Intent intent) {
             String name = intent.getData() == null ? "" : intent.getData().getSchemeSpecificPart();
             if (SOURCE.equals(name) || CLUSTER.equals(name) || "org.savior.sync".equals(name)) {
-                clearNav(); clearMusic(); connected = false; song = null; lastUpdate = 0;
+                clearNav(); clearMusic(); connected = false; song = null; lastUpdate = 0; updateAutoEntry();
                 if (navigationLogs != null) navigationLogs.stop();
                 navigationLogs = new NavigationLogReader(BridgeService.this, handler, logChanged);
                 navigationLogs.ensureStarted();
@@ -87,13 +89,15 @@ public final class BridgeService extends Service {
                 meters = null; turn = null; reason = "导航小组件超过 5 秒未更新，停止导航转发"; clearNav();
             }
             if (!preferences.getBoolean("nav", false)) clearNav();
-            if (!preferences.getBoolean("music", false)) clearMusic();
+            forwardMusic();
+            updateAutoEntry();
             publish(); handler.postDelayed(this, 1000);
         }
     };
 
     public void onCreate() {
         super.onCreate(); preferences = getSharedPreferences("bridge", MODE_PRIVATE);
+        autoEntry = new CarPlayAutoEntry(this);
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel("bridge", "CarPlay 仪表桥接", NotificationManager.IMPORTANCE_LOW));
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -215,10 +219,10 @@ public final class BridgeService extends Service {
             else if ("CarPlay".equals(distance)) { meters = null; turn = null; reason = "CarPlay 已连接，暂无导航指令"; }
             else if (meters == null || !Protocol.knownTurn(turn)) { meters = null; turn = null; reason = "无法识别当前箭头或距离，停止导航转发"; }
             else reason = "已读取真实导航指令（距离为小组件显示值）";
-            forward(); publish();
+            forward(); updateAutoEntry(); publish();
             Log.i("DiPlayBridge", "widget update=" + updates + " connected=" + connected + " turn=" + turn + " meters=" + meters + " song=" + (song != null) + " navSent=" + navSent + " musicSent=" + musicSent);
         } catch (Exception e) {
-            meters = null; turn = null; song = null; clearNav(); clearMusic();
+            meters = null; turn = null; song = null; connected = false; clearNav(); clearMusic(); updateAutoEntry();
             reason = "小组件数据解析失败：" + e.getMessage(); publish(); Log.e("DiPlayBridge", reason, e);
         }
     }
@@ -238,25 +242,51 @@ public final class BridgeService extends Service {
             outputRoad = Protocol.clusterRoad(outputRoad);
             sendBroadcast(clusterIntent("com.baidu.car.navi.INFO").putExtra("name", turn).putExtra("distance", meters.intValue()).putExtra("nextRoadName", outputRoad)); navSent++;
         } else { clearNav(); outputRoad = ""; roadSource = "暂无有效导航转发"; }
-        if (preferences.getBoolean("music", false) && connected && song != null) {
-            String identity = song.text + "\u0001" + song.playing;
-            if (!identity.equals(lastMusic)) {
-                sendMusic(song.text, song.playing); lastMusic = identity; ownedMusic = true;
-            }
-        } else clearMusic();
+        forwardMusic();
+    }
+
+    private boolean canForwardMusic() {
+        return !destroyed && receiverError == null && widgetView != null
+            && preferences.getBoolean("music", false) && connected && song != null;
+    }
+
+    private void forwardMusic() {
+        if (!canForwardMusic()) { clearMusic(); return; }
+        if (musicDelivery.next(song) == MusicDelivery.Action.SEND) sendCurrentMusic();
+    }
+
+    private void sendCurrentMusic() {
+        sendMusic(song.text, song.playing); ownedMusic = true;
+        musicDelivery.sent(song);
+    }
+
+    private void updateAutoEntry() {
+        View root = null;
+        if (widgetView != null && sourceResources != null) {
+            int id = sourceResources.getIdentifier("widget_root", "id", SOURCE);
+            if (id != 0) root = widgetView.findViewById(id);
+        }
+        if (autoEntry != null) autoEntry.tick(preferences.getBoolean("auto_enter", false),
+            receiverError == null && widgetView != null && connected
+                && ("CarPlay".equals(distance) || Protocol.meters(distance) != null), root);
+    }
+
+    private Intent musicIntent(String title, boolean playing) {
+        return clusterIntent("com.baidu.car.radio.notify.PLAY_INFO").putExtra("id", "diplay-widget")
+            .putExtra("title", title).putExtra("artist", "").putExtra("album_name", "").putExtra("source_name", "CarPlay")
+            .putExtra("source_type", 1).putExtra("is_playing", playing);
     }
 
     private void sendMusic(String title, boolean playing) {
-        sendBroadcast(clusterIntent("com.baidu.car.radio.notify.PLAY_INFO").putExtra("id", "diplay-widget")
-            .putExtra("title", title).putExtra("artist", "").putExtra("album_name", "").putExtra("source_name", "CarPlay")
-            .putExtra("source_type", 1).putExtra("is_playing", playing)); musicSent++;
+        sendBroadcast(musicIntent(title, playing)); musicSent++;
     }
 
     private void clearNav() {
         if (ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "FALSE")); ownedNav = false; }
     }
     private void clearMusic() {
-        if (ownedMusic) { sendMusic("", false); ownedMusic = false; lastMusic = null; }
+        musicDelivery.reset();
+        if (ownedMusic) { sendMusic("", false); ownedMusic = false; }
     }
 
     private void publish() {
@@ -265,6 +295,8 @@ public final class BridgeService extends Service {
             + "\n仪表道路：" + (outputRoad.isEmpty() ? "暂无导航" : outputRoad)
             + "\n距离：" + distance + "\n方向：" + turnLabel(turn)
             + "\n歌曲：" + (song == null ? "暂无" : song.text + (song.playing ? "（播放）" : "（暂停）"))
+            + "\n音乐同步：首次读取及歌曲变化时推送"
+            + "\n自动进入 CarPlay：" + (autoEntry == null ? "未启动" : autoEntry.status())
             + "\n\n" + reason
             + "\n开机自启动：" + (preferences.getBoolean("autostart", true) ? "开启" : "关闭")
             + (preferences.getString("auto_start_error", "").isEmpty() ? "" : "\n自启动失败：" + preferences.getString("auto_start_error", ""))

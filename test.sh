@@ -10,6 +10,13 @@ else
     BRIDGE_JAVA=java
 fi
 mkdir -p "$BRIDGE_TESTS"
-"$BRIDGE_JAVAC" --release 8 -encoding UTF-8 -d "$BRIDGE_TESTS"     "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/Protocol.java"     "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/NavigationLogState.java"     "$BRIDGE_SOURCE/tests/ProtocolTest.java" "$BRIDGE_SOURCE/tests/NavigationLogTest.java"
+"$BRIDGE_JAVAC" --release 8 -encoding UTF-8 -d "$BRIDGE_TESTS" \
+    "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/Protocol.java" \
+    "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/NavigationLogState.java" \
+    "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/MusicDelivery.java" \
+    "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/CarPlayEntryPolicy.java" \
+    "$BRIDGE_SOURCE/src/com/local/diplay/clusterbridge/ForegroundActivityState.java" \
+    "$BRIDGE_SOURCE/tests/ProtocolTest.java" "$BRIDGE_SOURCE/tests/NavigationLogTest.java" "$BRIDGE_SOURCE/tests/StartupTest.java"
 "$BRIDGE_JAVA" -classpath "$BRIDGE_TESTS" com.local.diplay.clusterbridge.ProtocolTest
 "$BRIDGE_JAVA" -classpath "$BRIDGE_TESTS" com.local.diplay.clusterbridge.NavigationLogTest
+"$BRIDGE_JAVA" -classpath "$BRIDGE_TESTS" com.local.diplay.clusterbridge.StartupTest
