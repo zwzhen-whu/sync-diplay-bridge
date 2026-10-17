@@ -62,6 +62,7 @@ public final class BridgeService extends Service {
     private long lastUpdate;
     private long lastHostAttempt;
     private int updates, navSent, musicSent;
+    private int hostGeneration;
     private NavigationLogReader navigationLogs;
     private String outputRoad = "", roadSource = "暂无";
     private final MusicDelivery musicDelivery = new MusicDelivery();
@@ -148,7 +149,8 @@ public final class BridgeService extends Service {
 
     private void initializeHost() {
         lastHostAttempt = SystemClock.elapsedRealtime();
-        if (host != null) host.stopListening();
+        final int generation = ++hostGeneration;
+        stopHost();
         widgetView = null; arrows.clear(); meters = null; turn = null;
         remainingTrip = null; widgetEta = ""; remainingFormats.clear();
         try {
@@ -167,6 +169,7 @@ public final class BridgeService extends Service {
                 protected AppWidgetHostView onCreateView(Context context, int widgetId, AppWidgetProviderInfo widgetInfo) {
                     return new AppWidgetHostView(context) {
                         public void updateAppWidget(RemoteViews views) {
+                            if (destroyed || generation != hostGeneration) return;
                             super.updateAppWidget(views);
                             if (views != null) readWidget(this);
                         }
@@ -195,8 +198,17 @@ public final class BridgeService extends Service {
             manager.updateAppWidgetOptions(id, options);
             widgetView = host.createView(this, id, provider); host.startListening();
         } catch (Exception e) {
-            clearNav(); reason = "小组件读取失败：" + e.getMessage(); Log.e("DiPlayBridge", reason, e); publish();
+            stopHost(); widgetView = null; connected = false; song = null; lastUpdate = 0;
+            clearNav(); clearMusic(); updateAutoEntry();
+            reason = "小组件读取失败，将重试：" + e.getMessage(); Log.e("DiPlayBridge", reason, e); publish();
         }
+    }
+
+    private void stopHost() {
+        if (host == null) return;
+        try { host.stopListening(); }
+        catch (RuntimeException e) { Log.w("DiPlayBridge", "Widget listener stop failed", e); }
+        host = null;
     }
 
     private static int[] pixels(Drawable drawable) {
@@ -396,7 +408,7 @@ public final class BridgeService extends Service {
         destroyed = true;
         handler.removeCallbacksAndMessages(null); clearNav(); clearMusic();
         if (navigationLogs != null) navigationLogs.stop();
-        if (host != null) host.stopListening(); unregisterReceiver(packages);
+        stopHost(); unregisterReceiver(packages);
         preferences.edit().putString("status", "读取服务已停止，转发已关闭。下次打开应用可重新启动。").apply();
         super.onDestroy();
     }

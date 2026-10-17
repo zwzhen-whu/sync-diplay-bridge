@@ -66,7 +66,7 @@ public final class MainActivity extends Activity {
         for (CheckBox check : new CheckBox[]{autostart, nav, remaining, music, autoEnter}) { check.setTextSize(18); check.setTextColor(Color.parseColor("#E8EDF5")); }
         nav.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("nav", checked).apply(); startReader(); });
         music.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("music", checked).apply(); startReader(); });
-        TextView entryHint = label("自动进入默认关闭，需授权使用情况访问。连接后 30 秒内若退回 DiPlay 入口页（含设置页），最多补跳转一次；切到其他应用后不再拉回。", 15, "#91A2B6");
+        TextView entryHint = label("自动进入默认关闭，需授权使用情况访问。连接后 90 秒内，只在 DiPlay 入口页（含设置页）重试，最多 3 次；其他应用在前台时不跳转，窗口结束后停止检查。", 15, "#91A2B6");
         entryHint.setPadding(0, dp(8), 0, dp(6)); body.addView(entryHint);
         Button usage = new Button(this); usage.setText("授权自动进入 CarPlay"); styleButton(usage, "#2A3A4D", "#E8EDF5"); body.addView(usage);
         usage.setOnClickListener(v -> {
@@ -95,7 +95,7 @@ public final class MainActivity extends Activity {
         limits.setPadding(0, dp(12), 0, 0); body.addView(limits);
         ScrollView statusScroll = new ScrollView(this); statusScroll.setBackground(panel());
         LinearLayout statusBody = new LinearLayout(this); statusBody.setOrientation(LinearLayout.VERTICAL); statusBody.setPadding(dp(20), dp(14), dp(20), dp(18));
-        statusBody.addView(label("运行状态 · 0.1.8", 20, "#61D9BB"));
+        statusBody.addView(label("运行状态 · 0.1.9 本地测试", 20, "#61D9BB"));
         status = label("正在读取…", 18, "#E8EDF5"); status.setPadding(0, dp(10), 0, 0); status.setLineSpacing(dp(3), 1); status.setTextIsSelectable(true);
         statusBody.addView(status); statusScroll.addView(statusBody);
         columns.addView(statusScroll, new LinearLayout.LayoutParams(0, -1, 0.56f));

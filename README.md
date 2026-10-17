@@ -1,6 +1,14 @@
 # Sync+ / DiPlay CarPlay 仪表桥接
 
-包名：`com.local.diplay.clusterbridge`，版本：0.1.8。已在原测试车机覆盖安装，修复 DiPlay 卸载再安装后的读取故障，用户确认歌曲和导航显示正常。新增的林肯剩余信息开关默认关闭，林肯仪表显示尚未实车验证；完整首次冷开机流程也尚未再次实测。界面使用深蓝灰背景、浅色文字和绿色开关，左右两栏分别显示设置及运行状态。已删除型号和 Android 8.1 白名单限制，不再根据车型或系统是否为 API 27 拒绝转发；最低系统要求仍为 Android 8.0。仪表应用及车机助手的签名检查保留，签名变化或助手缺失时拒绝转发。其他车型的实际仪表协议兼容性尚未验证。
+包名：`com.local.diplay.clusterbridge`，当前版本：0.1.9。已在原测试车机覆盖安装，并验证 Android 车机重启后的首次连接、主页自动恢复及百度路名、歌曲和箭头显示；整车断电冷启动及其他用户缺路名问题仍待验证。林肯实验开关默认关闭，实际显示仍未验证。界面为深色，最低 Android 8.0。仪表应用及车机助手的签名检查保留；其他车型和固件兼容性尚未验证。
+
+## 0.1.9 本地排查与修复
+
+自动进入改为连接后 90 秒内最多尝试 3 次、间隔至少 8 秒，只在 DiPlay 入口前台稳定时请求。短暂经过开机桌面或其他应用不再永久取消本次窗口；其他应用前台时不会跳转。点击发出仅表示已请求，前台连续显示 CarPlay 10 秒后才显示确认状态，窗口内仍观察较晚的回退。开启开关或补授权后重新建立观察窗口。
+
+路名解析兼容多个转向编号、带名称的诊断字段、部分字段更新、后到的转向说明及转义空白；日志缓存增加同次开机校验，时钟回拨清除失效状态。日志状态区分尚未收到、解析成功和旧系统日志组缺失。另补充小组件初始化失败后的重试、旧宿主回调隔离，以及繁体和俄乌语距离单位。
+
+除本地修复与模拟验证外，现车重启测试已记录到先打开 CarPlay、再退回主页，并由桥接在连接后约 5.37 秒自动恢复；用户确认未手动进入，导航和歌曲正常。其他用户的百度地图路名问题尚未取得其故障数据。详细证据和限制见 [本地排查报告](docs/LOCAL_AUDIT_0.1.9.md)及[实车测试记录](docs/VEHICLE_TEST_0.1.9.md)。音乐保持首次有效歌曲与实际变化时发送，导航仍使用原有 5 秒超时。
 
 ## 0.1.8 重装后恢复读取及剩余信息
 
@@ -22,17 +30,17 @@ DiPlay 的标准 `NavigationWidget` → Android `AppWidgetHost` → 本应用读
 
 日志读取权限可以访问系统日志；本应用的读取命令只选择 DiPlay 的传输标签，解析器只接受 DiPlay UID 的导航记录，其他记录会丢弃。日志进程随桥接服务停止，应用不把原始日志写入文件、不上传。
 
-0.1.5 在本应用私有偏好中缓存解析后的转向说明，覆盖更新后可以恢复。恢复只加载缓存，不恢复“导航有效”的判断；必须重新收到匹配进程、转向编号、方向和距离的新导航状态后才能使用。恢复时拒绝超过 24 小时的说明，导航结束或断开时清除相应缓存。
+0.1.5 起在本应用私有偏好中缓存解析后的转向说明。0.1.9 起恢复还要求 DiPlay UID 和系统 `boot_count` 一致；无法读取开机编号时不恢复磁盘缓存，避免跨开机 PID 复用导致错用路名。恢复不恢复“导航有效”的判断；必须重新收到匹配进程、转向编号、方向和距离的新状态后才能使用。拒绝超过 24 小时的缓存，导航结束或断开时清除相应记录。
 
 箭头通过当前安装 DiPlay 的同名 drawable 渲染结果匹配，资源 ID 在运行时读取。DiPlay 后续更新保留这些小组件名称和显示规则时，可以继续使用；接口变化时可能需要更新桥接应用。未知箭头或距离解析失败不会被当成直行指令。导航小组件超过 5 秒不更新时，停止本应用开启的导航。
 
-## 0.1.7 首次连接与歌曲推送
+## 首次连接与歌曲推送
 
 音乐转发开启后，第一次从 DiPlay 小组件读到有效歌曲就推送一次；之后只在歌名或播放/暂停状态实际变化时更新。读取同一首歌不会反复推送；没有周期重发，也没有启动阶段的清空/回填。断开或关闭转发时仍清除本应用开启的音乐显示；重新连接后可推送新的首次歌曲快照。
 
-“连接后停留在 DiPlay 时自动进入 CarPlay”默认关闭。启用并授予使用情况访问后，以 CarPlay 真正连接成功为起点观察 30 秒，连接前的等待不计入这个窗口。等待至少 3 秒，确认 DiPlay 入口 Activity 连续停留约 2 秒后，调用 DiPlay 小组件原有的点击动作，最多请求一次。
+“连接后停留在 DiPlay 时自动进入 CarPlay”默认关闭。启用并授予使用情况访问后，从读到有效连接开始观察 90 秒。等待至少 3 秒，确认 DiPlay 入口 Activity 连续停留约 2 秒后，调用小组件原有点击动作；最多请求 3 次，间隔至少 8 秒。
 
-首次开机可能先显示 CarPlay、随后又回到 DiPlay 入口。因此首次看到 CarPlay 不会提前结束这 30 秒的检查，仍保留一次回退纠正机会。切到其他应用后，本次连接立即结束检查；窗口结束或已补跳转后，不持续拉回。锁屏、灭屏、权限缺失或无法确认前台时不跳转。
+首次开机可能先显示 CarPlay、随后又退回入口。点击成功不再结束检查；前台连续显示 CarPlay 10 秒后显示确认状态，仍在同一个 90 秒窗口内观察回退。其他应用前台时暂停，返回 DiPlay 入口后才可能继续；超过窗口或用完次数后不再请求。锁屏、灭屏、权限缺失或无法确认前台时不跳转。开关关闭或权限缺失期间不消耗下一次启用的窗口。
 
 DiPlay 主页和设置页共用 `DiPlayActivity`，外部应用只能识别 Activity，无法精确区分内部页面。若希望新连接后留在 DiPlay 设置页，请关闭自动进入。此功能辅助处理入口停留，不修改 DiPlay 内部的启动逻辑。Android 10 及更新版本还可能限制后台启动界面，当前未实测。
 
@@ -44,7 +52,7 @@ adb shell appops set com.local.diplay.clusterbridge GET_USAGE_STATS allow
 
 该授权只用于自动进入，音乐推送不需要它。建议授权并开启后重新连接一次 CarPlay。应用仅在连接窗口内读取本次开机事件，后续增量读取，并在内存保留最新前台状态，避免主页停留超过一分钟后被遗漏；不保存或上传应用使用历史。
 
-本地构建、签名和三组回归测试已通过。现车验证了主页长时间停留后的识别和小组件跳转；实测首次开机中“连接后约 4 秒退回入口”的时序已加入回归。最终版本的完整首次冷开机流程尚未再次实测。导航原有的 5 秒超时行为保留。
+0.1.9 的本地构建、签名和六组回归测试已通过；现车已验证 Android 重启后首次连接时的主页回退与自动恢复，观察窗口内仅请求一次跳转。整车断电冷启动、休眠恢复及其他固件仍待验证。导航原有的 5 秒超时行为保留。
 
 ## 使用
 
@@ -66,7 +74,7 @@ ADB 安装和绑定：
 
 ```sh
 adb connect <车机IP>:5555
-adb install -r DiPlayClusterBridge-0.1.8.apk
+adb install -r DiPlayClusterBridge-0.1.9.apk
 adb shell appwidget grantbind --package com.local.diplay.clusterbridge --user 0
 adb shell pm grant com.local.diplay.clusterbridge android.permission.READ_LOGS
 adb shell am force-stop com.local.diplay.clusterbridge
@@ -118,14 +126,14 @@ export BRIDGE_KEY_PASSWORD='your-key-password'
 
 ## 下载与发布验证
 
-[v0.1.8 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.8)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.8/DiPlayClusterBridge-0.1.8.apk)和 `SHA256SUMS`。发布文件与本次修复后车机安装的 0.1.8 APK 完全一致，沿用 0.1.5/0.1.7 的签名，可覆盖更新并保留配置。历史版本：[v0.1.7](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)、[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
+[v0.1.9 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.9)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.9/DiPlayClusterBridge-0.1.9.apk)和 `SHA256SUMS`。发布文件与本次车机重启测试时实际安装的 0.1.9 APK 完全一致，沿用原签名，可覆盖更新并保留配置。为保留实测构建，界面版本栏仍带“本地测试”字样。历史版本：[v0.1.8](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.8)、[v0.1.7](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)、[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
 
 ```sh
 # 在下载 APK 和 SHA256SUMS 的目录中核对文件
 shasum -a 256 -c SHA256SUMS
 ```
 
-仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行 `test.sh` 中的纯 Java 测试（当前源码为五组），校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
+仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行 `test.sh` 中的纯 Java 测试（当前源码为六组），校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
 
 0.1.7 已通过构建、协议/导航/启动行为回归和签名检查。约 94 秒实车观察中，两首不同歌曲各推送一次，没有重复歌曲状态或空标题回填；后台更新后约 5.2 秒自动进入 CarPlay。首次冷开机退回入口的真实时序已纳入回归，最终版本完整首次冷开机及其他车型、系统版本、休眠恢复仍需实测。
 

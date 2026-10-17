@@ -48,9 +48,9 @@ public final class StartupTest {
         eq(entry.request(29000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(entry.request(31000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
         entry.connection(false, 32000); entry.connection(true, 33000);
-        eq(entry.request(64000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false); // expired
-        entry.connection(false, 65000);
-        eq(entry.request(70000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
+        eq(entry.request(124000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false); // expired
+        entry.connection(false, 125000);
+        eq(entry.request(130000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
 
         // The entry page may have been foreground for minutes before the phone
         // connects. A one-minute lookback would miss it, and empty incremental
@@ -59,17 +59,17 @@ public final class StartupTest {
         long wall = 2000000, elapsed = 600000, oldResume = wall - 180000;
         if (foreground.queryStart(wall, elapsed) > oldResume) throw new AssertionError("Long-wait entry event omitted");
         foreground.event(1, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY, oldResume);
-        foreground.queried(wall);
+        foreground.queried(wall, elapsed);
         CarPlayEntryPolicy delayed = new CarPlayEntryPolicy(); delayed.connection(true, elapsed);
         eq(delayed.request(elapsed+3000, foreground.packageName(), foreground.className()), false);
-        foreground.queryStart(wall+4000, elapsed+4000); foreground.queried(wall+4000); // no new events
+        foreground.queryStart(wall+4000, elapsed+4000); foreground.queried(wall+4000, elapsed+4000); // no new events
         eq(delayed.request(elapsed+5000, foreground.packageName(), foreground.className()), true);
         foreground.event(2, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY, wall+6000);
         eq(foreground.packageName(), null);
         foreground.event(1, "com.other.app", "OtherActivity", wall+7000);
         foreground.event(1, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY, oldResume); // old overlapping record
         eq(foreground.packageName(), "com.other.app");
-        foreground.queried(wall+8000);
+        foreground.queried(wall+8000, elapsed+8000);
         foreground.queryStart(wall-1000, elapsed+9000); // wall-clock adjustment invalidates old state
         eq(foreground.packageName(), null);
 
@@ -82,7 +82,7 @@ public final class StartupTest {
         eq(bootRace.request(7000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         CarPlayEntryPolicy settled = new CarPlayEntryPolicy(); settled.connection(true, 0);
         eq(settled.request(3000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
-        eq(settled.request(31000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false); // deliberate return after startup
+        eq(settled.request(91000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false); // deliberate return after startup
         System.out.println("Startup tests passed (first song once, no repeated sends, pause/change, first-boot fallback, long-wait foreground, reconnect limits)");
     }
 }

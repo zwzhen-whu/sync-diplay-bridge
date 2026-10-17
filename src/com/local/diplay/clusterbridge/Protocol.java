@@ -8,7 +8,7 @@ import java.util.regex.Pattern;
 
 /** Parse only the displayed widget protocol. No guessed guidance or private APIs. */
 public final class Protocol {
-    private static final Pattern DISTANCE = Pattern.compile("([0-9]+(?:\\.[0-9]+)?)(km|m|公里|千米|米|كم|م)");
+    private static final Pattern DISTANCE = Pattern.compile("([0-9]+(?:\\.[0-9]+)?)(km|m|公里|千米|公尺|米|كم|م|км|м)");
     public static final String[][] ARROWS = {
         {"ic_maneuver_left", "turn_left"}, {"ic_maneuver_right", "turn_right"},
         {"ic_maneuver_sharp_left", "turn_left_back"}, {"ic_maneuver_sharp_right", "turn_right_back"},
@@ -23,7 +23,8 @@ public final class Protocol {
         StringBuilder normalized = new StringBuilder();
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
-            if (Character.isWhitespace(c) || Character.isSpaceChar(c) || c == '\u200e' || c == '\u200f') continue;
+            if (Character.isWhitespace(c) || Character.isSpaceChar(c) || c == '\u061c' || c == '\u200e' || c == '\u200f'
+                || (c >= '\u202a' && c <= '\u202e') || (c >= '\u2066' && c <= '\u2069')) continue;
             int digit = Character.digit(c, 10);
             if (digit >= 0) normalized.append((char) ('0' + digit));
             else if (c == ',' || c == '\u066b') normalized.append('.');
@@ -34,7 +35,7 @@ public final class Protocol {
         try {
             BigDecimal value = new BigDecimal(match.group(1));
             String unit = match.group(2);
-            if (!(unit.equals("m") || unit.equals("米") || unit.equals("م"))) value = value.multiply(new BigDecimal(1000));
+            if (!(unit.equals("m") || unit.equals("米") || unit.equals("公尺") || unit.equals("م") || unit.equals("м"))) value = value.multiply(new BigDecimal(1000));
             if (value.compareTo(new BigDecimal(2000000)) > 0) return null;
             return value.setScale(0, RoundingMode.HALF_UP).intValueExact();
         } catch (ArithmeticException e) { return null; }
