@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Base64;
+import java.util.ArrayDeque;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -16,9 +17,13 @@ public final class NavigationLogState {
     private static final Pattern NUMBER = Pattern.compile("u(?:8|16|32)=(\\d+)\\b.*");
     private static final Pattern CLOSE = Pattern.compile("IAP2 CLOSE \\[([^\\]]+)\\]");
     private static final long ROUTE_TIMEOUT = 15000;
+    // DiPlay throttles widget rendering to once per second. Keep a small,
+    // short-lived set of real route snapshots until that view catches up.
+    private static final long WIDGET_LAG_MS = 1500;
     private final Map<String, Frame> pending = new HashMap<>();
     private final LinkedHashMap<String, Maneuver> maneuvers = new LinkedHashMap<>();
     private Route route;
+    private final ArrayDeque<RetiredRoute> recentRoutes = new ArrayDeque<>();
     private int framesSeen, framesParsed;
     private long lastNowWall = -1;
 
@@ -32,6 +37,10 @@ public final class NavigationLogState {
     }
     private static final class Route {
         String prefix, currentRoad; int index, distance; long wall;
+    }
+    private static final class RetiredRoute {
+        final Route route; final long replacedAt;
+        RetiredRoute(Route route, long replacedAt) { this.route = route; this.replacedAt = replacedAt; }
     }
 
     /** Return true only when a complete, trusted navigation frame changed the cache. */
@@ -53,7 +62,7 @@ public final class NavigationLogState {
                 String sessionPrefix = pid + ":" + closed.group(1) + ":";
                 pending.remove(thread);
                 maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(sessionPrefix) && e.getValue().wall <= wall);
-                if (route != null && route.prefix.startsWith(sessionPrefix) && route.wall <= wall) route = null;
+                if (route != null && route.prefix.startsWith(sessionPrefix) && route.wall <= wall) { route = null; recentRoutes.clear(); }
                 return true;
             }
             if (message.startsWith("IAP2 RX")) {
@@ -105,7 +114,7 @@ public final class NavigationLogState {
             // A late detail for the already-active first turn is not a new route.
             if (index == 0 && !currentZero) {
                 maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(prefix + ":") && e.getValue().wall <= frame.wall);
-                if (route != null && route.prefix.equals(prefix) && route.wall <= frame.wall) route = null;
+                if (route != null && route.prefix.equals(prefix) && route.wall <= frame.wall) { route = null; recentRoutes.clear(); }
             }
             Maneuver next = new Maneuver(); next.type = type; next.wall = frame.wall;
             next.description = frame.parameters.containsKey(2) ? quoted(frame.parameters.get(2)) : previous == null ? "" : previous.description;
@@ -117,7 +126,7 @@ public final class NavigationLogState {
         Integer state = typedNumber(frame.parameters.get(1), 8);
         if (route != null && route.wall > frame.wall) return false;
         if (state != null && (state == 0 || state == 2)) {
-            if (route != null && route.prefix.equals(prefix)) route = null;
+            if (route != null && route.prefix.equals(prefix)) { route = null; recentRoutes.clear(); }
             maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(prefix + ":") && e.getValue().wall <= frame.wall);
             return true;
         }
@@ -126,23 +135,49 @@ public final class NavigationLogState {
         if ((state == null && previous == null) || (state != null && state != 1)) return false;
         Integer index = frame.parameters.containsKey(13) ? firstIndex(frame.parameters.get(13)) : previous == null ? null : previous.index;
         Integer distance = frame.parameters.containsKey(10) ? typedNumber(frame.parameters.get(10), 32) : previous == null ? null : previous.distance;
-        if (index == null || distance == null) { route = null; return true; }
+        if (index == null || distance == null) { route = null; recentRoutes.clear(); return true; }
         Route next = new Route(); next.prefix = prefix; next.index = index; next.distance = distance; next.wall = frame.wall;
         next.currentRoad = frame.parameters.containsKey(3) ? quoted(frame.parameters.get(3)) : previous == null ? "" : previous.currentRoad;
+        if (route == null || !route.prefix.equals(next.prefix)) recentRoutes.clear();
+        else if (route.index != next.index || route.distance != next.distance) {
+            recentRoutes.addLast(new RetiredRoute(route, frame.wall));
+            while (recentRoutes.size() > 8) recentRoutes.removeFirst();
+        }
+        while (!recentRoutes.isEmpty() && frame.wall - recentRoutes.peekFirst().replacedAt > WIDGET_LAG_MS) recentRoutes.removeFirst();
         route = next; return true;
     }
 
     public synchronized String road(String widgetTurn, Integer widgetMeters, long nowWall) {
         if (route == null || widgetTurn == null || widgetMeters == null || nowWall < route.wall || nowWall - route.wall > ROUTE_TIMEOUT) return "";
-        Maneuver maneuver = maneuvers.get(route.prefix + ":" + route.index);
-        if (maneuver == null || maneuver.wall > nowWall || !widgetTurn.equals(Protocol.turnForAppleType(maneuver.type))) return "";
-        if (widgetMeters != Protocol.roundedWidgetMeters(route.distance)) return "";
+        // Equal distance alone cannot identify an old maneuver. If the current
+        // route has that distance, missing/new details must never borrow its predecessor.
+        if (widgetMeters == Protocol.roundedWidgetMeters(route.distance))
+            return matches(route, widgetTurn, widgetMeters, nowWall) ? roadFor(route) : "";
+        java.util.Iterator<RetiredRoute> candidates = recentRoutes.descendingIterator();
+        while (candidates.hasNext()) {
+            RetiredRoute previous = candidates.next();
+            if (nowWall >= previous.replacedAt && nowWall - previous.replacedAt <= WIDGET_LAG_MS
+                && route.prefix.equals(previous.route.prefix) && matches(previous.route, widgetTurn, widgetMeters, nowWall))
+                return roadFor(previous.route);
+        }
+        return "";
+    }
+
+    private boolean matches(Route candidate, String turn, int meters, long nowWall) {
+        Maneuver maneuver = maneuvers.get(candidate.prefix + ":" + candidate.index);
+        return nowWall >= candidate.wall && nowWall - candidate.wall <= ROUTE_TIMEOUT
+            && maneuver != null && maneuver.wall <= nowWall && turn.equals(Protocol.turnForAppleType(maneuver.type))
+            && meters == Protocol.roundedWidgetMeters(candidate.distance);
+    }
+
+    private String roadFor(Route candidate) {
+        Maneuver maneuver = maneuvers.get(candidate.prefix + ":" + candidate.index);
         String road = Protocol.roadName(maneuver.road);
-        if (road.isEmpty()) road = Protocol.roadName(route.currentRoad);
+        if (road.isEmpty()) road = Protocol.roadName(candidate.currentRoad);
         return road.isEmpty() ? Protocol.roadName(maneuver.description) : road;
     }
 
-    public synchronized void clear() { pending.clear(); maneuvers.clear(); route = null; lastNowWall = -1; }
+    public synchronized void clear() { pending.clear(); maneuvers.clear(); recentRoutes.clear(); route = null; lastNowWall = -1; }
     public synchronized int framesSeen() { return framesSeen; }
     public synchronized int framesParsed() { return framesParsed; }
 

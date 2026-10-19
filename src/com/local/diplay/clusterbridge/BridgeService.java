@@ -62,18 +62,31 @@ public final class BridgeService extends Service {
     private long lastUpdate;
     private long lastHostAttempt;
     private int updates, navSent, musicSent;
+    private long lastStatusWrittenAt = -1;
     private int hostGeneration;
     private NavigationLogReader navigationLogs;
     private String outputRoad = "", roadSource = "暂无";
+    private String lastDiagnosticRoad;
     private final MusicDelivery musicDelivery = new MusicDelivery();
+    private final NavigationDelivery navigationDelivery = new NavigationDelivery();
     private final RemainingDelivery remainingDelivery = new RemainingDelivery();
     private final List<RemainingTrip.Formats> remainingFormats = new ArrayList<>();
     private RemainingTrip remainingTrip;
     private String widgetEta = "";
     private int remainingSent;
     private CarPlayAutoEntry autoEntry;
+    private StartupAudioRecovery audioRecovery;
+    private WakeDiagnostics wakeDiagnostics;
     private boolean destroyed;
-    private final Runnable logChanged = () -> { if (!destroyed) { forward(); publish(); } };
+    private final Runnable logChanged = () -> {
+        if (!destroyed) {
+            // Log frames also describe future turns. They update the cache, not
+            // the instrument, unless a current widget is waiting for its road.
+            if (navigationDelivery.retryDelay(SystemClock.elapsedRealtime()) >= 0) forward();
+            publish();
+        }
+    };
+    private final Runnable navigationRetry = () -> { if (!destroyed) { forward(); publish(); } };
 
     private final BroadcastReceiver packages = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
@@ -81,7 +94,8 @@ public final class BridgeService extends Service {
             if (SOURCE.equals(name) || CLUSTER.equals(name) || "org.savior.sync".equals(name)) {
                 clearNav(); clearMusic(); connected = false; song = null; lastUpdate = 0; updateAutoEntry();
                 if (navigationLogs != null) navigationLogs.stop();
-                navigationLogs = new NavigationLogReader(BridgeService.this, handler, logChanged);
+                if (audioRecovery != null) audioRecovery.tick(false, false, 0);
+                navigationLogs = new NavigationLogReader(BridgeService.this, handler, logChanged, audioRecovery);
                 navigationLogs.ensureStarted();
                 receiverError = validateReceiver(); initializeHost();
             }
@@ -99,8 +113,10 @@ public final class BridgeService extends Service {
                 meters = null; turn = null; reason = "导航小组件超过 5 秒未更新，停止导航转发"; clearNav();
             }
             if (!preferences.getBoolean("nav", false)) clearNav();
-            forwardMusic();
+            forward();
             updateAutoEntry();
+            if (audioRecovery != null) audioRecovery.tick(connected, song != null && song.playing, lastUpdate);
+            ensureWakeDiagnostics();
             publish(); handler.postDelayed(this, 1000);
         }
     };
@@ -108,25 +124,41 @@ public final class BridgeService extends Service {
     public void onCreate() {
         super.onCreate(); preferences = getSharedPreferences("bridge", MODE_PRIVATE);
         autoEntry = new CarPlayAutoEntry(this);
+        audioRecovery = new StartupAudioRecovery(this, preferences);
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel("bridge", "CarPlay 仪表桥接", NotificationManager.IMPORTANCE_LOW));
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         startForeground(1, new Notification.Builder(this, "bridge").setSmallIcon(android.R.drawable.ic_menu_directions)
             .setContentTitle("CarPlay 仪表桥接正在读取小组件").setContentText("打开查看状态或停止转发").setContentIntent(open).build());
         receiverError = validateReceiver();
-        navigationLogs = new NavigationLogReader(this, handler, logChanged);
+        navigationLogs = new NavigationLogReader(this, handler, logChanged, audioRecovery);
         navigationLogs.ensureStarted();
         IntentFilter filter = new IntentFilter(); filter.addAction(Intent.ACTION_PACKAGE_REPLACED); filter.addAction(Intent.ACTION_PACKAGE_REMOVED); filter.addAction(Intent.ACTION_PACKAGE_ADDED); filter.addDataScheme("package");
         registerReceiver(packages, filter);
         initializeHost(); handler.post(watchdog);
+        ensureWakeDiagnostics();
     }
 
     public int onStartCommand(Intent intent, int flags, int id) {
+        ensureWakeDiagnostics();
         if (widgetView == null) initializeHost();
         if (!preferences.getBoolean("nav", false)) clearNav();
         if (!preferences.getBoolean("music", false)) clearMusic();
         forward(); publish();
         return START_NOT_STICKY;
+    }
+
+    private void ensureWakeDiagnostics() {
+        if (preferences.getBoolean("wake_diagnostics", false)) {
+            if (wakeDiagnostics == null) {
+                try { wakeDiagnostics = new WakeDiagnostics(this); }
+                catch (RuntimeException e) {
+                    preferences.edit().putBoolean("wake_diagnostics", false).apply();
+                    Log.w("DiPlayBridge", "Optional wake diagnostics unavailable", e);
+                }
+            }
+            if (wakeDiagnostics != null) wakeDiagnostics.snapshot(connected, song != null && song.playing, ownedNav);
+        } else if (wakeDiagnostics != null) { wakeDiagnostics.close(); wakeDiagnostics = null; }
     }
 
     @SuppressWarnings("deprecation")
@@ -273,6 +305,10 @@ public final class BridgeService extends Service {
     private void readWidget(View root) {
         try {
             distance = text(root, "widget_distance"); road = text(root, "widget_road");
+            if (!road.equals(lastDiagnosticRoad)) {
+                lastDiagnosticRoad = road;
+                Log.i("DiPlayBridge", "Road characters: " + Protocol.roadDiagnostic(road));
+            }
             widgetEta = optionalText(root, "widget_eta");
             remainingTrip = readRemainingTrip(widgetEta);
             song = Protocol.song(text(root, "widget_song")); connected = !"DiPlay".equals(distance);
@@ -297,15 +333,24 @@ public final class BridgeService extends Service {
         if (receiverError != null) { clearNav(); clearMusic(); return; }
         boolean fresh = lastUpdate > 0 && SystemClock.elapsedRealtime() - lastUpdate <= NAV_TIMEOUT;
         if (preferences.getBoolean("nav", false) && connected && fresh && meters != null && Protocol.knownTurn(turn)) {
-            if (!ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "TRUE")); ownedNav = true; }
-            outputRoad = Protocol.roadName(road); roadSource = "DiPlay 小组件";
-            if (outputRoad.isEmpty() && navigationLogs != null) {
-                outputRoad = navigationLogs.state.road(turn, meters, System.currentTimeMillis());
-                roadSource = outputRoad.isEmpty() ? "缺少有效路名" : "DiPlay 导航说明（日志回退）";
+            String candidateRoad = Protocol.roadName(road), candidateSource = "DiPlay 小组件";
+            if (candidateRoad.isEmpty() && navigationLogs != null) {
+                candidateRoad = navigationLogs.state.road(turn, meters, System.currentTimeMillis());
+                candidateSource = candidateRoad.isEmpty() ? "缺少有效路名" : "DiPlay 导航说明（日志回退）";
             }
-            outputRoad = Protocol.clusterRoad(outputRoad);
-            sendBroadcast(clusterIntent("com.baidu.car.navi.INFO").putExtra("name", turn).putExtra("distance", meters.intValue()).putExtra("nextRoadName", outputRoad)); navSent++;
-            forwardRemaining(true);
+            long now = SystemClock.elapsedRealtime();
+            NavigationDelivery.Action action = navigationDelivery.next(turn, meters, candidateRoad, now);
+            handler.removeCallbacks(navigationRetry);
+            if (action == NavigationDelivery.Action.WAIT) {
+                roadSource = "等待导航说明与小组件同步（最多 1.5 秒）";
+                handler.postDelayed(navigationRetry, navigationDelivery.retryDelay(now));
+            } else if (action == NavigationDelivery.Action.SEND) {
+                if (!ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "TRUE")); ownedNav = true; }
+                outputRoad = Protocol.clusterRoad(candidateRoad); roadSource = candidateSource;
+                sendBroadcast(clusterIntent("com.baidu.car.navi.INFO").putExtra("name", turn).putExtra("distance", meters.intValue()).putExtra("nextRoadName", outputRoad)); navSent++;
+                navigationDelivery.sent(turn, meters, candidateRoad, now);
+            } else roadSource = candidateSource;
+            forwardRemaining(ownedNav);
         } else { clearNav(); outputRoad = ""; roadSource = "暂无有效导航转发"; }
         forwardMusic();
     }
@@ -358,6 +403,7 @@ public final class BridgeService extends Service {
     }
 
     private void clearNav() {
+        handler.removeCallbacks(navigationRetry); navigationDelivery.reset();
         forwardRemaining(false);
         if (ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "FALSE")); ownedNav = false; }
     }
@@ -367,12 +413,17 @@ public final class BridgeService extends Service {
     }
 
     private void publish() {
+        long now = SystemClock.elapsedRealtime();
+        if (lastStatusWrittenAt >= 0 && now - lastStatusWrittenAt < 1000) return;
+        lastStatusWrittenAt = now;
         String age = lastUpdate == 0 ? "尚未收到" : (SystemClock.elapsedRealtime() - lastUpdate) / 1000 + " 秒前";
         String status = "仪表接口：" + (receiverError == null ? "就绪" : receiverError)
             + "\n仪表道路：" + (outputRoad.isEmpty() ? "暂无导航" : outputRoad)
             + "\n距离：" + distance + "\n方向：" + turnLabel(turn)
             + "\n歌曲：" + (song == null ? "暂无" : song.text + (song.playing ? "（播放）" : "（暂停）"))
             + "\n音乐同步：首次读取及歌曲变化时推送"
+            + "\n开机无声恢复：" + (audioRecovery == null ? "关闭" : audioRecovery.status())
+            + "\n亮屏音频诊断：" + (wakeDiagnostics == null ? "关闭" : wakeDiagnostics.status())
             + "\n林肯剩余信息：" + (!preferences.getBoolean("lincoln_remaining", false) ? "关闭" :
                 !preferences.getBoolean("nav", false) ? "等待开启导航转发" : !ownedNav ? "暂无有效导航" : remainingTrip == null ? "里程/时间缺失或格式不支持" :
                 remainingTrip.meters + " 米 / " + remainingTrip.seconds / 60 + " 分钟（显示取整值）")
@@ -408,6 +459,8 @@ public final class BridgeService extends Service {
         destroyed = true;
         handler.removeCallbacksAndMessages(null); clearNav(); clearMusic();
         if (navigationLogs != null) navigationLogs.stop();
+        if (wakeDiagnostics != null) wakeDiagnostics.close();
+        if (audioRecovery != null) audioRecovery.close();
         stopHost(); unregisterReceiver(packages);
         preferences.edit().putString("status", "读取服务已停止，转发已关闭。下次打开应用可重新启动。").apply();
         super.onDestroy();

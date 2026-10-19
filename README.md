@@ -1,6 +1,22 @@
 # Sync+ / DiPlay CarPlay 仪表桥接
 
-包名：`com.local.diplay.clusterbridge`，当前版本：0.1.9。已在原测试车机覆盖安装，并验证 Android 车机重启后的首次连接、主页自动恢复及百度路名、歌曲和箭头显示；整车断电冷启动及其他用户缺路名问题仍待验证。林肯实验开关默认关闭，实际显示仍未验证。界面为深色，最低 Android 8.0。仪表应用及车机助手的签名检查保留；其他车型和固件兼容性尚未验证。
+包名：`com.local.diplay.clusterbridge`，当前版本为 0.1.10。针对导航更新时路名短暂缺失及重复发送增加同步和合并，并增加默认关闭的首次开机无声恢复开关；实车验证和未解决问题见[四项故障排查记录](docs/FOUR_ISSUES_0.1.10.md)。界面为深色，最低 Android 8.0。保留仪表应用及车机助手的签名检查；其他车型和固件兼容性尚未验证。
+
+## 0.1.10 导航同步与首次无声恢复
+
+DiPlay 的导航日志和小组件不是同时更新。现在保留同一会话中最多 8 个真实导航状态，旧状态替换后最多保留 1.5 秒，仍须与小组件的方向和取整距离匹配；当前距离相同但转向编号不同的记录不会借用旧路名。缺失路名时最多等待 1.5 秒，不因新数据而无限延后。导航发送合并至最多每秒 2 次，相同内容每秒保活一次，待发送回调最多一个。导航原有 5 秒无更新超时保留，音乐没有周期重发。
+
+道路文字中的 Unicode 空格统一为普通空格，去除不可见格式控制符；不猜测或删除原文中的问号、替换符。停车测试中，普通空格和 U+2005 空格都未复现照片的乱码，较长双道路文字出现截短。因此不能把照片中的乱码认定为已修复。
+
+新增“首次开机无声时恢复一次（实验性）”，默认关闭。需通过 ADB 单独授予 `DUMP` 系统诊断读取权限，并授权使用情况访问。启动检查最多持续本次 Android 开机后的 30 分钟，正常获得媒体焦点后立即结束。应用在后台读取 `audio`、`media_session` 快照，确认原车待机已退出、主／导航焦点栈及车辆音频资源为空、当前 DiPlay UID/PID 的媒体音轨正在播放且存在对应焦点申请、媒体按键仍交给 DiPlay，同时核对 CarPlay 前台、非通话、非静音等条件，才发送一次暂停；收到暂停之后更新的小组件回执，才继续播放一次。暂停回执最多等待 4 秒，次数在发送前按 `boot_count` 保存，每次开机最多一轮。其他音源、通话、前台变化、已获焦点或无法确认时不执行恢复。
+
+音乐单独播放时，小组件可以长期不刷新，所以恢复不沿用导航的 5 秒时效；是否仍在播放以当前系统音轨核对。快照读取最多只有一个后台任务，最短间隔 2 秒，每项诊断最多约 2.5 秒、128 KiB，原始快照不落盘。`DUMP` 是可读取系统服务状态的持久诊断权限，代码仅请求音频及媒体会话两项；关闭恢复开关会停止相关读取，权限本身需另行撤销或卸载。它不自行请求音频焦点或调整音量。系统负责将媒体按键交给当前媒体会话，不同固件仍需验证。接口参考 [Android AudioManager](https://developer.android.com/reference/android/media/AudioManager#dispatchMediaKeyEvent(android.view.KeyEvent))。
+
+本车 2026-10-19 完整关机、解锁黑屏播放、按启动的测试中，桥接在系统退出音频待机后仅发送一次暂停和继续，约 4.1 秒取得成功焦点回执，用户确认未按 Siri 而自动恢复声音。正常已获焦点时不触发也已验证；其他固件和更多启动场景仍需验证。
+
+另新增默认关闭的“临时保存亮屏/音频诊断（本地）”：无需电脑保持联网，每次服务启动最多记录 45 分钟，两个文件总量最多 512 KiB，只保存屏幕、播放、音频模式及限定来源的焦点事件，不录音、不上传。目录为 Android 应用专属外部目录 `Android/data/com.local.diplay.clusterbridge/files/diagnostics/`，本轮测试结束已关闭。黑屏不一定等于 Android 的 `isInteractive=false`，无声恢复核对的是音频待机已退出、DiPlay 音轨仍活跃但未取得焦点。
+
+十组纯 Java 回归、APK 构建和签名校验通过；真实行驶约 30 分钟后的整机卡死仍未复现，减少导航重复发送属于降低负载措施，不能视为已经消除卡死。
 
 ## 0.1.9 本地排查与修复
 
@@ -22,13 +38,13 @@
 
 DiPlay 的标准 `NavigationWidget` → Android `AppWidgetHost` → 本应用读取小组件中实际呈现的箭头、距离、道路、歌曲 → 定向广播到现有仪表程序。
 
-本应用自行实现桥接代码，没有修改或重新打包 DiPlay，没有复制其私有认证材料，也没有替换仪表系统应用。没有网络、无障碍、通知读取或 root 权限。声明前台服务、接收开机广播、日志读取和使用情况访问权限；小组件绑定、日志读取需单独通过 ADB 授权，使用情况访问只供默认关闭的自动进入功能使用。
+本应用自行实现桥接代码，没有修改或重新打包 DiPlay，没有复制其私有认证材料，也没有替换仪表系统应用。没有网络、无障碍、通知读取或 root 权限。声明前台服务、接收开机广播、日志读取、系统诊断读取和使用情况访问权限；小组件绑定、日志读取及可选诊断读取需单独通过 ADB 授权。使用情况访问供默认关闭的自动进入和首次无声恢复功能确认前台页面。
 
 0.1.4 增加路名回退：本次百度地图的 iAP2 数据未提供专用的“当前路名”和“转向后的路名”字段，但提供了 `0x5202` 参数 2 的完整导航说明，其中包含道路文字。DiPlay 0.2.19 没有把这个说明填入小组件，所以仪表收到空路名，显示为 `null`。
 
 小组件有正常路名时，优先使用小组件。路名为空时，桥接读取 `xcertplay-usb` 标签的日志，并检查来源 UID 是否为当前 DiPlay，按进程、会话、转向编号缓存说明。只有当前导航状态、方向和取整距离均与小组件匹配，且导航状态不超过 15 秒，才把这段真实说明作为仪表道路文字。它保留导航说明原文，不凭文字猜道路名称。没有可用数据时显示“道路名称未提供”，避免把空值显示为 `null`。
 
-日志读取权限可以访问系统日志；本应用的读取命令只选择 DiPlay 的传输标签，解析器只接受 DiPlay UID 的导航记录，其他记录会丢弃。日志进程随桥接服务停止，应用不把原始日志写入文件、不上传。
+日志读取权限可以访问系统日志；导航读取命令只选择 DiPlay 传输、DiPlay 媒体焦点和系统焦点三个标签。导航解析只接受当前 DiPlay UID 的导航记录，开机无声恢复只接受当前 DiPlay UID 和系统 UID 的匹配事件。导航解析不把原始日志写入文件；临时音频诊断开启时，另外按上限保存限定来源的焦点记录。不上传。日志进程随桥接服务停止。
 
 0.1.5 起在本应用私有偏好中缓存解析后的转向说明。0.1.9 起恢复还要求 DiPlay UID 和系统 `boot_count` 一致；无法读取开机编号时不恢复磁盘缓存，避免跨开机 PID 复用导致错用路名。恢复不恢复“导航有效”的判断；必须重新收到匹配进程、转向编号、方向和距离的新状态后才能使用。拒绝超过 24 小时的缓存，导航结束或断开时清除相应记录。
 
@@ -50,7 +66,7 @@ DiPlay 主页和设置页共用 `DiPlayActivity`，外部应用只能识别 Acti
 adb shell appops set com.local.diplay.clusterbridge GET_USAGE_STATS allow
 ```
 
-该授权只用于自动进入，音乐推送不需要它。建议授权并开启后重新连接一次 CarPlay。应用仅在连接窗口内读取本次开机事件，后续增量读取，并在内存保留最新前台状态，避免主页停留超过一分钟后被遗漏；不保存或上传应用使用历史。
+该授权供自动进入和首次无声恢复确认前台，音乐文字推送不需要它。建议授权并开启后重新连接一次 CarPlay。应用仅在相应检查窗口内读取本次开机事件，后续增量读取，并在内存保留最新前台状态，避免主页停留超过一分钟后被遗漏；不保存或上传应用使用历史。
 
 0.1.9 的本地构建、签名和六组回归测试已通过；现车已验证 Android 重启后首次连接时的主页回退与自动恢复，观察窗口内仅请求一次跳转。整车断电冷启动、休眠恢复及其他固件仍待验证。导航原有的 5 秒超时行为保留。
 
@@ -74,7 +90,7 @@ ADB 安装和绑定：
 
 ```sh
 adb connect <车机IP>:5555
-adb install -r DiPlayClusterBridge-0.1.9.apk
+adb install -r DiPlayClusterBridge-0.1.10.apk
 adb shell appwidget grantbind --package com.local.diplay.clusterbridge --user 0
 adb shell pm grant com.local.diplay.clusterbridge android.permission.READ_LOGS
 adb shell am force-stop com.local.diplay.clusterbridge
@@ -82,6 +98,15 @@ adb shell am start -n com.local.diplay.clusterbridge/.MainActivity
 ```
 
 Android 8.1 上首次授予日志权限后，需要按以上步骤重新启动桥接进程，使它获得 `log` 权限组。只重启读取服务可能不够。后续覆盖更新会保留授权；该流程不会重启或修改 DiPlay。
+
+只有准备开启首次开机无声恢复时，才需要额外授予系统诊断读取权限；普通导航和歌曲转发不需要该权限。此权限持续到撤销或卸载，关闭开关只停止读取。当前 SYNC+ 固件允许通过 ADB 授予，其他系统可能拒绝，应用此时不执行恢复：
+
+```sh
+adb shell pm grant com.local.diplay.clusterbridge android.permission.DUMP
+
+# 不再使用时可撤销；导航和音乐文字转发仍可工作
+adb shell pm revoke com.local.diplay.clusterbridge android.permission.DUMP
+```
 
 退出和卸载：先打开应用，点击“停止并关闭转发”，再卸载。
 
@@ -96,7 +121,7 @@ adb uninstall com.local.diplay.clusterbridge
 - 环岛显示通用环岛箭头，不能恢复第几出口或车道信息。
 - 小组件歌曲是已合并的文字，作为标题转发；艺术家不单独拆分。仪表程序可能截短到 19 个字符。
 - 不转发缺失的经纬度、到达时刻、歌曲进度/时长。0.1.8 的剩余总路程和剩余时长仅在实验开关开启且数据完整时发送；数值来自小组件显示，已经取整。
-- 音乐显示不等于接管声音输出；本应用不请求音频焦点，也不改变音量、音源或按键控制。
+- 默认仅转发音乐文字及状态；启用首次开机无声恢复后，在匹配故障条件时额外发送一次暂停/继续命令。本应用不请求音频焦点，也不调整音量。
 - 音乐更新依赖 DiPlay 的歌曲/连接状态回调，暂无独立的进程死亡检测。异常退出而没有断开回调时，歌曲可能暂时保留。
 - 两个应用同时向仪表发送信息可能互相覆盖。仪表没有提供可验证的来源仲裁接口，需关闭不使用的转发来源。
 - 本次测试依据当前安装的 DiPlay 0.2.19。源码主分支仅用于理解公开小组件接口，实际解析取自设备当前资源。
@@ -126,14 +151,14 @@ export BRIDGE_KEY_PASSWORD='your-key-password'
 
 ## 下载与发布验证
 
-[v0.1.9 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.9)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.9/DiPlayClusterBridge-0.1.9.apk)和 `SHA256SUMS`。发布文件与本次车机重启测试时实际安装的 0.1.9 APK 完全一致，沿用原签名，可覆盖更新并保留配置。为保留实测构建，界面版本栏仍带“本地测试”字样。历史版本：[v0.1.8](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.8)、[v0.1.7](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)、[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
+[v0.1.10 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.10)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.10/DiPlayClusterBridge-0.1.10.apk)和 `SHA256SUMS`。发布文件与 2026-10-19 本车完整冷启动自动恢复声音时实际安装的 APK 完全一致，沿用原签名，可覆盖更新并保留配置。为保留实测构建，界面版本栏仍带“测试”字样；首次无声恢复及临时诊断默认关闭。历史版本：[v0.1.9](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.9)、[v0.1.8](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.8)、[v0.1.7](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)、[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
 
 ```sh
 # 在下载 APK 和 SHA256SUMS 的目录中核对文件
 shasum -a 256 -c SHA256SUMS
 ```
 
-仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行 `test.sh` 中的纯 Java 测试（当前源码为六组），校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
+仓库中的 `release/<版本>/` 保存对应已签名 APK、校验文件和发布说明。推送与该标签下 manifest 版本一致的 `v*` 标签后，GitHub Actions 运行 `test.sh` 中的纯 Java 测试（当前源码为十组），校验对应 APK 的 SHA-256，再发布到 GitHub Releases。发布流程不在服务器上重新签名，签名私钥保留在维护者本地。源代码压缩包由 GitHub 自动提供。
 
 0.1.7 已通过构建、协议/导航/启动行为回归和签名检查。约 94 秒实车观察中，两首不同歌曲各推送一次，没有重复歌曲状态或空标题回填；后台更新后约 5.2 秒自动进入 CarPlay。首次冷开机退回入口的真实时序已纳入回归，最终版本完整首次冷开机及其他车型、系统版本、休眠恢复仍需实测。
 

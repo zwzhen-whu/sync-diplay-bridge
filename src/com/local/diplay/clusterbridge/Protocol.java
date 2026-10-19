@@ -58,9 +58,39 @@ public final class Protocol {
     private static boolean padding(char c) { return Character.isWhitespace(c) || Character.isSpaceChar(c); }
 
     public static String clusterRoad(String text) {
-        String value = roadName(text);
+        StringBuilder normalized = new StringBuilder();
+        boolean space = false;
+        for (int cp : roadName(text).codePoints().toArray()) {
+            if (Character.isWhitespace(cp) || Character.isSpaceChar(cp)) { space = normalized.length() > 0; continue; }
+            // Formatting marks have no road-name content and are unsupported by
+            // some instrument fonts. Do not guess or remove literal '?' / U+FFFD.
+            if (Character.getType(cp) == Character.FORMAT || Character.isISOControl(cp)) continue;
+            if (space) normalized.append(' ');
+            normalized.appendCodePoint(cp); space = false;
+        }
+        String value = normalized.toString();
         // The OEM receiver drops an empty StreetName field, displaying the literal null.
         return value.isEmpty() ? "道路名称未提供" : value;
+    }
+
+    /** Log lengths and exceptional code points, never the user's actual road text. */
+    public static String roadDiagnostic(String text) {
+        if (text == null) text = "";
+        StringBuilder special = new StringBuilder(); int seen = 0;
+        for (int cp : text.codePoints().toArray()) {
+            int type = Character.getType(cp);
+            if (((Character.isWhitespace(cp) || Character.isSpaceChar(cp)) && cp != ' ')
+                || cp == 0xfffd || type == Character.FORMAT || type == Character.PRIVATE_USE
+                || type == Character.SURROGATE || Character.isISOControl(cp)) {
+                if (seen < 8) {
+                    if (special.length() > 0) special.append(',');
+                    special.append(String.format(Locale.ROOT, "U+%04X", cp));
+                }
+                seen++;
+            }
+        }
+        return "utf16=" + text.length() + " utf8=" + text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+            + " special=[" + special + "] count=" + seen;
     }
 
     public static String turnForAppleType(int type) {

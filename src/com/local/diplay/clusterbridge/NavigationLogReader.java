@@ -18,14 +18,15 @@ final class NavigationLogReader {
     private final Context context;
     private final Handler handler;
     private final Runnable changed;
+    private final StartupAudioRecovery audioRecovery;
     private volatile Process process;
     private volatile Thread worker;
     private volatile boolean stopped;
     private volatile String status = "等待日志授权";
     private final int bootCount;
 
-    NavigationLogReader(Context context, Handler handler, Runnable changed) {
-        this.context = context; this.handler = handler; this.changed = changed;
+    NavigationLogReader(Context context, Handler handler, Runnable changed, StartupAudioRecovery audioRecovery) {
+        this.context = context; this.handler = handler; this.changed = changed; this.audioRecovery = audioRecovery;
         int boot;
         try { boot = Settings.Global.getInt(context.getContentResolver(), "boot_count", -1); }
         catch (RuntimeException e) { boot = -1; }
@@ -56,13 +57,15 @@ final class NavigationLogReader {
                         preferences.getInt("navigation_cache_boot", -1), bootCount))
                         state.restoreManeuvers(preferences.getString("navigation_cache", ""), System.currentTimeMillis());
                 }
-                Process child = new ProcessBuilder("logcat", "-b", "main", "-v", "threadtime", "-v", "uid", "-v", "epoch", "-s", "xcertplay-usb:I").redirectErrorStream(true).start();
+                Process child = new ProcessBuilder("logcat", "-b", "main", "-v", "threadtime", "-v", "uid", "-v", "epoch", "-s",
+                    "xcertplay-usb:I", "DiPlay-MediaKeys:I", "MediaFocusControl:I").redirectErrorStream(true).start();
                 process = child;
                 if (stopped) { child.destroy(); return; }
                 status = waitingStatus;
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(child.getInputStream(), "UTF-8"))) {
                     String line;
                     while (!stopped && (line = reader.readLine()) != null) {
+                        if (audioRecovery != null) audioRecovery.acceptLog(line, uid);
                         synchronized (NavigationLogReader.this) {
                             if (stopped) break;
                             boolean updated = state.accept(line, uid, System.currentTimeMillis());
