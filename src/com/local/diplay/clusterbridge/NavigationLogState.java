@@ -20,10 +20,15 @@ public final class NavigationLogState {
     // DiPlay throttles widget rendering to once per second. Keep a small,
     // short-lived set of real route snapshots until that view catches up.
     private static final long WIDGET_LAG_MS = 1500;
+    private static final long EMPTY_LIST_HIDE_MS = 3000;
+    private static final int MAX_MANEUVERS = 64;
     private final Map<String, Frame> pending = new HashMap<>();
     private final LinkedHashMap<String, Maneuver> maneuvers = new LinkedHashMap<>();
     private Route route;
     private final ArrayDeque<RetiredRoute> recentRoutes = new ArrayDeque<>();
+    private long emptyListSince = -1;
+    private String restartPrefix;
+    private long restartWall = -1;
     private int framesSeen, framesParsed;
     private long lastNowWall = -1;
 
@@ -62,7 +67,8 @@ public final class NavigationLogState {
                 String sessionPrefix = pid + ":" + closed.group(1) + ":";
                 pending.remove(thread);
                 maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(sessionPrefix) && e.getValue().wall <= wall);
-                if (route != null && route.prefix.startsWith(sessionPrefix) && route.wall <= wall) { route = null; recentRoutes.clear(); }
+                if (route != null && route.prefix.startsWith(sessionPrefix) && route.wall <= wall) { route = null; recentRoutes.clear(); emptyListSince = -1; }
+                if (restartPrefix != null && restartPrefix.startsWith(sessionPrefix) && restartWall <= wall) clearRestart();
                 return true;
             }
             if (message.startsWith("IAP2 RX")) {
@@ -111,35 +117,64 @@ public final class NavigationLogState {
             if (index == 0 && !currentZero) previous = null;
             Integer type = frame.parameters.containsKey(3) ? typedNumber(frame.parameters.get(3), 8) : previous == null ? null : previous.type;
             if (type == null) return false;
-            // A late detail for the already-active first turn is not a new route.
+            // A detail is not a route-selection message. A late first-turn
+            // refresh must not erase the currently selected later turn.
             if (index == 0 && !currentZero) {
-                maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(prefix + ":") && e.getValue().wall <= frame.wall);
-                if (route != null && route.prefix.equals(prefix) && route.wall <= frame.wall) { route = null; recentRoutes.clear(); }
+                if (route != null && route.prefix.equals(prefix) && frame.wall >= route.wall && frame.wall - route.wall <= ROUTE_TIMEOUT) {
+                    restartPrefix = prefix; restartWall = frame.wall;
+                } else {
+                    maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(prefix + ":") && e.getValue().wall <= frame.wall);
+                    if (route != null && route.prefix.equals(prefix) && route.wall <= frame.wall) { route = null; recentRoutes.clear(); emptyListSince = -1; }
+                }
             }
             Maneuver next = new Maneuver(); next.type = type; next.wall = frame.wall;
             next.description = frame.parameters.containsKey(2) ? quoted(frame.parameters.get(2)) : previous == null ? "" : previous.description;
             next.road = frame.parameters.containsKey(4) ? quoted(frame.parameters.get(4)) : previous == null ? "" : previous.road;
             maneuvers.put(key, next);
-            while (maneuvers.size() > 64) maneuvers.remove(maneuvers.keySet().iterator().next());
+            trimManeuvers(prefix, frame.wall);
             return true;
         }
         Integer state = typedNumber(frame.parameters.get(1), 8);
+        if (frame.parameters.containsKey(1) && state == null) return false;
         if (route != null && route.wall > frame.wall) return false;
         if (state != null && (state == 0 || state == 2)) {
-            if (route != null && route.prefix.equals(prefix)) { route = null; recentRoutes.clear(); }
+            if (route != null && route.prefix.equals(prefix)) { route = null; recentRoutes.clear(); emptyListSince = -1; }
+            if (prefix.equals(restartPrefix)) clearRestart();
             maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(prefix + ":") && e.getValue().wall <= frame.wall);
             return true;
         }
         if (nowWall - frame.wall > ROUTE_TIMEOUT) return false;
         Route previous = route != null && route.prefix.equals(prefix) && frame.wall - route.wall <= ROUTE_TIMEOUT ? route : null;
-        if ((state == null && previous == null) || (state != null && state != 1)) return false;
+        // The source keeps guidance for nonterminal states, including 3 and 5.
+        if (state == null && previous == null) return false;
+        if (frame.parameters.containsKey(13) && emptyList(frame.parameters.get(13))) {
+            // The source retains the last instruction for a brief empty list;
+            // it need not resend cached details when a populated list resumes.
+            if (previous != null) {
+                if (emptyListSince < 0) emptyListSince = frame.wall;
+                // Empty-list keepalives are still fresh route context. Keep
+                // the deadline fixed while allowing a later state-less resume.
+                route.wall = frame.wall;
+                if (frame.parameters.containsKey(3)) route.currentRoad = quoted(frame.parameters.get(3));
+            } else { route = null; recentRoutes.clear(); emptyListSince = -1; }
+            return true;
+        }
         Integer index = frame.parameters.containsKey(13) ? firstIndex(frame.parameters.get(13)) : previous == null ? null : previous.index;
         Integer distance = frame.parameters.containsKey(10) ? typedNumber(frame.parameters.get(10), 32) : previous == null ? null : previous.distance;
-        if (index == null || distance == null) { route = null; recentRoutes.clear(); return true; }
+        if (index == null || distance == null) { route = null; recentRoutes.clear(); emptyListSince = -1; return true; }
+        boolean restarted = previous != null && previous.index != 0 && index == 0;
+        if (restarted) {
+            // Only a route update confirms the return to the first maneuver.
+            // Never mix old future details into this confirmed restart.
+            final long boundary = prefix.equals(restartPrefix) && restartWall <= frame.wall && frame.wall - restartWall <= ROUTE_TIMEOUT ? restartWall : frame.wall;
+            maneuvers.entrySet().removeIf(e -> e.getKey().startsWith(prefix + ":") && e.getValue().wall < boundary);
+            recentRoutes.clear(); clearRestart();
+        }
+        if (frame.parameters.containsKey(13)) emptyListSince = -1;
         Route next = new Route(); next.prefix = prefix; next.index = index; next.distance = distance; next.wall = frame.wall;
         next.currentRoad = frame.parameters.containsKey(3) ? quoted(frame.parameters.get(3)) : previous == null ? "" : previous.currentRoad;
-        if (route == null || !route.prefix.equals(next.prefix)) recentRoutes.clear();
-        else if (route.index != next.index || route.distance != next.distance) {
+        if (route == null || !route.prefix.equals(next.prefix)) { recentRoutes.clear(); emptyListSince = -1; clearRestart(); }
+        else if (!restarted && (route.index != next.index || route.distance != next.distance)) {
             recentRoutes.addLast(new RetiredRoute(route, frame.wall));
             while (recentRoutes.size() > 8) recentRoutes.removeFirst();
         }
@@ -149,6 +184,7 @@ public final class NavigationLogState {
 
     public synchronized String road(String widgetTurn, Integer widgetMeters, long nowWall) {
         if (route == null || widgetTurn == null || widgetMeters == null || nowWall < route.wall || nowWall - route.wall > ROUTE_TIMEOUT) return "";
+        if (emptyListSince >= 0 && nowWall - emptyListSince >= EMPTY_LIST_HIDE_MS) return "";
         // Equal distance alone cannot identify an old maneuver. If the current
         // route has that distance, missing/new details must never borrow its predecessor.
         if (widgetMeters == Protocol.roundedWidgetMeters(route.distance))
@@ -177,7 +213,43 @@ public final class NavigationLogState {
         return road.isEmpty() ? Protocol.roadName(maneuver.description) : road;
     }
 
-    public synchronized void clear() { pending.clear(); maneuvers.clear(); recentRoutes.clear(); route = null; lastNowWall = -1; }
+    private void clearRestart() { restartPrefix = null; restartWall = -1; }
+
+    /** Keep a hard bound without letting distant prefetch evict the visible/next instruction. */
+    private void trimManeuvers(String incomingPrefix, long nowWall) {
+        while (maneuvers.size() > MAX_MANEUVERS) {
+            String victim = null; long worst = Long.MIN_VALUE;
+            for (Map.Entry<String, Maneuver> entry : maneuvers.entrySet()) {
+                String key = entry.getKey();
+                if (route != null && key.equals(route.prefix + ":" + route.index)) continue;
+                boolean protectedRecent = false;
+                for (RetiredRoute recent : recentRoutes) {
+                    if (nowWall - recent.replacedAt <= WIDGET_LAG_MS && key.equals(recent.route.prefix + ":" + recent.route.index)) { protectedRecent = true; break; }
+                }
+                if (protectedRecent) continue;
+                int split = key.lastIndexOf(':');
+                String prefix = split < 0 ? "" : key.substring(0, split);
+                int index;
+                try { index = Integer.parseInt(key.substring(split + 1)); }
+                catch (NumberFormatException e) { index = Integer.MAX_VALUE; }
+                boolean active = route != null && prefix.equals(route.prefix);
+                long score;
+                if (!active && !prefix.equals(incomingPrefix)) score = 3_000_000L;
+                else if (active && index < route.index) score = 2_000_000L + route.index - index;
+                else score = active ? (long) index - route.index : index;
+                if (victim == null || score > worst) { victim = key; worst = score; }
+            }
+            // At most nine entries can be protected by current/recent snapshots.
+            if (victim == null) break;
+            maneuvers.remove(victim);
+        }
+    }
+
+    private static boolean emptyList(String value) {
+        return "void".equals(value) || "[]".equals(value) || "bytes=0 [<empty>]".equals(value);
+    }
+
+    public synchronized void clear() { pending.clear(); maneuvers.clear(); recentRoutes.clear(); route = null; emptyListSince = -1; clearRestart(); lastNowWall = -1; }
     public synchronized int framesSeen() { return framesSeen; }
     public synchronized int framesParsed() { return framesParsed; }
 
@@ -254,6 +326,9 @@ public final class NavigationLogState {
     }
 
     private static Integer typedNumber(String value, int bits) {
+        // The source formats opaque one-byte NUL as an empty quoted string.
+        // This means numeric zero only in a field whose wire type is u8.
+        if (bits == 8 && "\"\"".equals(value)) return 0;
         if (value == null || !value.startsWith("u" + bits + "=")) return null;
         Integer result = number(value);
         if (result == null || (bits < 32 && result >= (1 << bits))) return null;

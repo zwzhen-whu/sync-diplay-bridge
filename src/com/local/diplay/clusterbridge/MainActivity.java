@@ -1,7 +1,9 @@
 package com.local.diplay.clusterbridge;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.appwidget.AppWidgetManager;
+import android.bluetooth.BluetoothDevice;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
@@ -15,9 +17,12 @@ import android.provider.Settings;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.util.List;
 
 public final class MainActivity extends Activity {
     private final Handler handler = new Handler();
@@ -53,20 +58,61 @@ public final class MainActivity extends Activity {
         autostart.setOnCheckedChangeListener((button, checked) -> preferences.edit().putBoolean("autostart", checked).apply());
         CheckBox nav = new CheckBox(this); nav.setText("转发 CarPlay 导航箭头、距离和道路");
         nav.setChecked(preferences.getBoolean("nav", false)); body.addView(nav);
-        CheckBox remaining = new CheckBox(this); remaining.setText("林肯 SYNC+：剩余时间与里程（实验性）");
+        body.addView(label("仪表道路文字", 17, "#AAB7C7"));
+        RadioGroup roadMode = new RadioGroup(this); roadMode.setOrientation(RadioGroup.VERTICAL); body.addView(roadMode);
+        String[] roadModes = {Protocol.ROAD_ORIGINAL, Protocol.ROAD_CLEAN};
+        String[] roadLabels = {"保留原文", "去掉导航提示语（保留全部路名）"};
+        int[] roadIds = new int[roadModes.length]; int selectedRoad = 0;
+        for (int i = 0; i < roadModes.length; i++) {
+            RadioButton button = new RadioButton(this); roadIds[i] = android.view.View.generateViewId(); button.setId(roadIds[i]);
+            button.setText(roadLabels[i]); button.setTextSize(18); button.setTextColor(Color.parseColor("#E8EDF5")); roadMode.addView(button);
+            if (roadModes[i].equals(Protocol.roadDisplayMode(preferences.getString("road_display_mode", Protocol.ROAD_ORIGINAL)))) selectedRoad = i;
+        }
+        roadMode.check(roadIds[selectedRoad]);
+        roadMode.setOnCheckedChangeListener((group, id) -> {
+            for (int i = 0; i < roadIds.length; i++) if (roadIds[i] == id) {
+                preferences.edit().putString("road_display_mode", roadModes[i]).apply(); startReader(); break;
+            }
+        });
+        body.addView(label("去掉开头独立的“去往”“进入”等提示，保留后面全部路名和空格。例如“去往 八一路 洪山侧路”显示“八一路 洪山侧路”。", 15, "#91A2B6"));
+        CheckBox remaining = new CheckBox(this); remaining.setText("林肯 SYNC+：剩余时间与里程");
         remaining.setChecked(preferences.getBoolean("lincoln_remaining", false)); body.addView(remaining);
         remaining.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("lincoln_remaining", checked).apply(); startReader(); });
-        TextView remainingHint = label("默认关闭，需同时开启导航转发。仅转发 DiPlay 提供的剩余数据，林肯仪表显示尚待实车验证。", 15, "#91A2B6");
+        TextView remainingHint = label("默认关闭，需同时开启导航转发。向林肯仪表同步 DiPlay 提供的剩余时间与里程。", 15, "#91A2B6");
         remainingHint.setPadding(0, dp(4), 0, dp(8)); body.addView(remainingHint);
         CheckBox music = new CheckBox(this); music.setText("转发 CarPlay 歌曲文字和播放状态");
         music.setChecked(preferences.getBoolean("music", false)); body.addView(music);
-        CheckBox autoEnter = new CheckBox(this); autoEnter.setText("连接后停留在 DiPlay 时自动进入 CarPlay");
+        CheckBox calls = new CheckBox(this); calls.setText("转发 CarPlay 通话姓名、号码和计时（测试）");
+        calls.setTextSize(18); calls.setTextColor(Color.parseColor("#E8EDF5"));
+        calls.setChecked(preferences.getBoolean(CarPlayCallDisplay.ENABLED, false)); body.addView(calls);
+        calls.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean(CarPlayCallDisplay.ENABLED, checked).apply(); startReader(); });
+        body.addView(label("默认关闭。连接 CarPlay 后从下一次通话开始显示；挂断或断开后清除。蓝牙通话仍连接时交由原车显示。联系人信息不保存。", 15, "#91A2B6"));
+        CheckBox bluetoothMedia = new CheckBox(this); bluetoothMedia.setText("插入 iPhone 时关闭手机蓝牙媒体音频");
+        bluetoothMedia.setTextSize(18); bluetoothMedia.setTextColor(Color.parseColor("#E8EDF5"));
+        bluetoothMedia.setChecked(preferences.getBoolean(BluetoothMediaGuard.ENABLED, false)); body.addView(bluetoothMedia);
+        body.addView(label("默认只关闭媒体，可选择同时断开通话。拔出或关闭此开关时恢复原设置；自动模式仅在一台已配对时执行。", 15, "#91A2B6"));
+        Button bluetoothPhone = new Button(this); bluetoothPhone.setText(bluetoothPhoneLabel());
+        styleButton(bluetoothPhone, "#2A3A4D", "#E8EDF5"); body.addView(bluetoothPhone);
+        bluetoothPhone.setOnClickListener(v -> selectBluetoothPhone(bluetoothPhone));
+        CheckBox bluetoothCalls = new CheckBox(this); bluetoothCalls.setText("同时关闭蓝牙通话连接（可选）");
+        bluetoothCalls.setTextSize(18); bluetoothCalls.setTextColor(Color.parseColor("#E8EDF5"));
+        bluetoothCalls.setChecked(preferences.getBoolean(BluetoothMediaGuard.CALLS, false));
+        bluetoothCalls.setEnabled(bluetoothMedia.isChecked()); body.addView(bluetoothCalls);
+        bluetoothCalls.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean(BluetoothMediaGuard.CALLS, checked).apply(); startReader();
+        });
+        bluetoothMedia.setOnCheckedChangeListener((button, checked) -> {
+            preferences.edit().putBoolean(BluetoothMediaGuard.ENABLED, checked).apply();
+            bluetoothCalls.setEnabled(checked); startReader();
+        });
+        body.addView(label("默认关闭，需先开启上方功能。拔出后恢复原通话设置；正在通话时暂缓断开。", 15, "#91A2B6"));
+        CheckBox autoEnter = new CheckBox(this); autoEnter.setText("连接后停留在 DiPlay 时自动进入 CarPlay（一次）");
         autoEnter.setChecked(preferences.getBoolean("auto_enter", false)); body.addView(autoEnter);
         autoEnter.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("auto_enter", checked).apply(); startReader(); });
         for (CheckBox check : new CheckBox[]{autostart, nav, remaining, music, autoEnter}) { check.setTextSize(18); check.setTextColor(Color.parseColor("#E8EDF5")); }
         nav.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("nav", checked).apply(); startReader(); });
         music.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("music", checked).apply(); startReader(); });
-        TextView entryHint = label("自动进入默认关闭，需授权使用情况访问。连接后 90 秒内，只在 DiPlay 入口页（含设置页）重试，最多 3 次；其他应用在前台时不跳转，窗口结束后停止检查。", 15, "#91A2B6");
+        TextView entryHint = label("默认关闭，需授权使用情况访问。每次连接最多自动进入一次；CarPlay 已稳定显示后返回首页不再跳转。其他应用在前台时不跳转，90 秒后结束检查。", 15, "#91A2B6");
         entryHint.setPadding(0, dp(8), 0, dp(6)); body.addView(entryHint);
         Button usage = new Button(this); usage.setText("授权自动进入 CarPlay"); styleButton(usage, "#2A3A4D", "#E8EDF5"); body.addView(usage);
         usage.setOnClickListener(v -> {
@@ -88,7 +134,7 @@ public final class MainActivity extends Activity {
         Button stop = new Button(this); stop.setText("停止并关闭转发"); buttons.addView(stop);
         styleButton(stop, "#422B34", "#F1B9BC");
         stop.setOnClickListener(v -> {
-            nav.setChecked(false); music.setChecked(false);
+            nav.setChecked(false); music.setChecked(false); calls.setChecked(false);
             stopService(new Intent(this, BridgeService.class));
         });
         CheckBox diagnostics = new CheckBox(this); diagnostics.setText("临时保存亮屏/音频诊断（本地）");
@@ -96,7 +142,7 @@ public final class MainActivity extends Activity {
         diagnostics.setChecked(preferences.getBoolean("wake_diagnostics", false)); body.addView(diagnostics);
         diagnostics.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("wake_diagnostics", checked).apply(); startReader(); });
         body.addView(label("默认关闭。每次服务启动最多记录45分钟，文件总量不超过512KB；不录音、不上传、不改变声音。测试后关闭。", 15, "#91A2B6"));
-        CheckBox audioRecovery = new CheckBox(this); audioRecovery.setText("首次开机无声时恢复一次（实验性）");
+        CheckBox audioRecovery = new CheckBox(this); audioRecovery.setText("首次开机无声时恢复一次");
         audioRecovery.setTextSize(18); audioRecovery.setTextColor(Color.parseColor("#E8EDF5"));
         audioRecovery.setChecked(preferences.getBoolean("startup_audio_recovery", false)); body.addView(audioRecovery);
         audioRecovery.setOnCheckedChangeListener((button, checked) -> { preferences.edit().putBoolean("startup_audio_recovery", checked).apply(); startReader(); });
@@ -105,7 +151,7 @@ public final class MainActivity extends Activity {
         limits.setPadding(0, dp(12), 0, 0); body.addView(limits);
         ScrollView statusScroll = new ScrollView(this); statusScroll.setBackground(panel());
         LinearLayout statusBody = new LinearLayout(this); statusBody.setOrientation(LinearLayout.VERTICAL); statusBody.setPadding(dp(20), dp(14), dp(20), dp(18));
-        statusBody.addView(label("运行状态 · 0.1.10 测试", 20, "#61D9BB"));
+        statusBody.addView(label("运行状态 · 0.1.16 测试", 20, "#61D9BB"));
         status = label("正在读取…", 18, "#E8EDF5"); status.setPadding(0, dp(10), 0, 0); status.setLineSpacing(dp(3), 1); status.setTextIsSelectable(true);
         statusBody.addView(status); statusScroll.addView(statusBody);
         columns.addView(statusScroll, new LinearLayout.LayoutParams(0, -1, 0.56f));
@@ -128,6 +174,29 @@ public final class MainActivity extends Activity {
     }
 
     private void startReader() { startForegroundService(new Intent(this, BridgeService.class)); }
+    private String bluetoothPhoneLabel() {
+        String address = preferences.getString(BluetoothMediaGuard.TARGET, "");
+        if (address.isEmpty()) return "蓝牙手机：自动选择唯一已配对设备";
+        for (BluetoothDevice device : BluetoothMediaGuard.devices()) if (address.equals(device.getAddress()))
+            return "蓝牙手机：" + BluetoothMediaGuard.deviceLabel(device);
+        return "蓝牙手机：原设备未配对，请重新选择";
+    }
+    private void selectBluetoothPhone(Button button) {
+        if (!BluetoothMediaGuard.supported()) {
+            Toast.makeText(this, "当前仅适配 Android 8.0/8.1 的蓝牙媒体控制", Toast.LENGTH_LONG).show(); return;
+        }
+        List<BluetoothDevice> devices = BluetoothMediaGuard.devices();
+        String[] choices = new String[devices.size() + 1]; choices[0] = "自动选择唯一已配对设备";
+        String current = preferences.getString(BluetoothMediaGuard.TARGET, ""); int selected = 0;
+        for (int i = 0; i < devices.size(); i++) {
+            choices[i + 1] = BluetoothMediaGuard.deviceLabel(devices.get(i));
+            if (current.equals(devices.get(i).getAddress())) selected = i + 1;
+        }
+        new AlertDialog.Builder(this).setTitle("选择此 iPhone 的蓝牙配对").setSingleChoiceItems(choices, selected, (dialog, which) -> {
+            preferences.edit().putString(BluetoothMediaGuard.TARGET, which == 0 ? "" : devices.get(which - 1).getAddress()).apply();
+            button.setText(bluetoothPhoneLabel()); startReader(); dialog.dismiss();
+        }).setNegativeButton("取消", null).show();
+    }
     protected void onActivityResult(int req, int result, Intent data) { super.onActivityResult(req, result, data); startReader(); }
     protected void onResume() { super.onResume(); handler.post(refresh); }
     protected void onPause() { handler.removeCallbacks(refresh); super.onPause(); }

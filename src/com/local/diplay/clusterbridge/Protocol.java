@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 
 /** Parse only the displayed widget protocol. No guessed guidance or private APIs. */
 public final class Protocol {
+    public static final String ROAD_ORIGINAL = "original", ROAD_CLEAN = "without_prompts";
     private static final Pattern DISTANCE = Pattern.compile("([0-9]+(?:\\.[0-9]+)?)(km|m|公里|千米|公尺|米|كم|م|км|м)");
     public static final String[][] ARROWS = {
         {"ic_maneuver_left", "turn_left"}, {"ic_maneuver_right", "turn_right"},
@@ -48,19 +49,9 @@ public final class Protocol {
 
     public static String roadName(String text) {
         if (text == null) return "";
-        text = text.replace("\u0000", "");
-        int start = 0, end = text.length();
-        while (start < end && padding(text.charAt(start))) start++;
-        while (end > start && padding(text.charAt(end - 1))) end--;
-        String result = text.substring(start, end);
-        return result.equalsIgnoreCase("null") || result.equalsIgnoreCase("(null)") || result.equalsIgnoreCase("undefined") ? "" : result;
-    }
-    private static boolean padding(char c) { return Character.isWhitespace(c) || Character.isSpaceChar(c); }
-
-    public static String clusterRoad(String text) {
         StringBuilder normalized = new StringBuilder();
         boolean space = false;
-        for (int cp : roadName(text).codePoints().toArray()) {
+        for (int cp : text.codePoints().toArray()) {
             if (Character.isWhitespace(cp) || Character.isSpaceChar(cp)) { space = normalized.length() > 0; continue; }
             // Formatting marks have no road-name content and are unsupported by
             // some instrument fonts. Do not guess or remove literal '?' / U+FFFD.
@@ -68,9 +59,51 @@ public final class Protocol {
             if (space) normalized.append(' ');
             normalized.appendCodePoint(cp); space = false;
         }
-        String value = normalized.toString();
+        String result = normalized.toString();
+        return result.equalsIgnoreCase("null") || result.equalsIgnoreCase("(null)") || result.equalsIgnoreCase("undefined") ? "" : result;
+    }
+
+    public static String clusterRoad(String text) {
+        return clusterRoad(text, ROAD_ORIGINAL);
+    }
+
+    public static String roadDisplayMode(String savedMode) {
+        // Old display choices migrate to prompt removal while retaining every
+        // road, including before the persisted preference migration completes.
+        return ROAD_CLEAN.equals(savedMode) || "first".equals(savedMode) || "comma".equals(savedMode) ? ROAD_CLEAN : ROAD_ORIGINAL;
+    }
+
+    public static String clusterRoad(String text, String displayMode) {
+        // Availability checks, log fallback and final output must use the same
+        // cleanup; formatting-only input must not hide a valid log road.
+        String value = roadName(text);
         // The OEM receiver drops an empty StreetName field, displaying the literal null.
-        return value.isEmpty() ? "道路名称未提供" : value;
+        if (value.isEmpty()) return "道路名称未提供";
+        // Apply display choices only here; source matching keeps the full text.
+        if (ROAD_CLEAN.equals(roadDisplayMode(displayMode))) return roadsWithoutPrompts(value);
+        return value;
+    }
+
+    private static String roadsWithoutPrompts(String value) {
+        // Strip only leading standalone prompts. Keep every following token,
+        // including later roads, internal spaces and multiword English names.
+        int start = 0;
+        for (String part : value.split(" ")) {
+            if (!roadPrompt(part)) break;
+            start += part.length() + 1;
+        }
+        return start < value.length() ? value.substring(start) : "道路名称未提供";
+    }
+
+    private static boolean roadPrompt(String value) {
+        switch (value) {
+            case "现在": case "请": case "进入": case "驶入": case "转入":
+            case "沿": case "沿着": case "继续": case "前往": case "去往": case "现在进入":
+            case "左转": case "右转": case "直行": case "向左": case "向右":
+                return true;
+            default:
+                return value.endsWith("后") && meters(value.substring(0, value.length() - 1)) != null;
+        }
     }
 
     /** Log lengths and exceptional code points, never the user's actual road text. */
@@ -80,8 +113,10 @@ public final class Protocol {
         for (int cp : text.codePoints().toArray()) {
             int type = Character.getType(cp);
             if (((Character.isWhitespace(cp) || Character.isSpaceChar(cp)) && cp != ' ')
-                || cp == 0xfffd || type == Character.FORMAT || type == Character.PRIVATE_USE
-                || type == Character.SURROGATE || Character.isISOControl(cp)) {
+                || cp == '?' || cp == 0xfffd || type == Character.FORMAT || type == Character.PRIVATE_USE
+                // codePoints joins valid surrogate pairs. A surrogate-range
+                // value here is an unpaired UTF-16 code unit.
+                || (cp >= 0xd800 && cp <= 0xdfff) || Character.isISOControl(cp)) {
                 if (seen < 8) {
                     if (special.length() > 0) special.append(',');
                     special.append(String.format(Locale.ROOT, "U+%04X", cp));

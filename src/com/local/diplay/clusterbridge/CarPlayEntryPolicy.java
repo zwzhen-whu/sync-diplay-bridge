@@ -1,19 +1,19 @@
 package com.local.diplay.clusterbridge;
 
-/** Bounded startup recovery, confirmed by the foreground player rather than click dispatch. */
+/** One automatic entry per connection; a stable existing player also ends the startup window. */
 public final class CarPlayEntryPolicy {
     public static final String SOURCE = "com.shihab.diplay";
     public static final String ENTRY = "com.shilapi.xcertplay.DiPlayActivity";
     public static final String PLAYER = "com.shilapi.xcertplay.CarPlayHostActivity";
-    public static final long WINDOW_MS = 90000, RETRY_MS = 8000, SETTLE_MS = 10000;
-    public static final int MAX_ATTEMPTS = 3;
-    private long connectedAt = -1, candidateAt = -1, playerAt = -1, lastAttemptAt = -1;
+    public static final long WINDOW_MS = 90000, SETTLE_MS = 10000;
+    public static final int MAX_ATTEMPTS = 1;
+    private long connectedAt = -1, candidateAt = -1, playerAt = -1;
     private boolean connected, finished, confirmed;
     private int attempts;
 
     public void connection(boolean value, long now) {
         if (!value || !connected) {
-            connectedAt = value ? now : -1; candidateAt = playerAt = lastAttemptAt = -1;
+            connectedAt = value ? now : -1; candidateAt = playerAt = -1;
             finished = confirmed = false; attempts = 0;
         }
         connected = value;
@@ -32,15 +32,14 @@ public final class CarPlayEntryPolicy {
             // seconds AFTER the session and its video activity become active.
             candidateAt = -1;
             if (playerAt < 0) playerAt = now;
-            if (now - playerAt >= SETTLE_MS) confirmed = true;
+            if (now - playerAt >= SETTLE_MS) { confirmed = true; finished = true; }
             return false;
         }
         if (SOURCE.equals(foregroundPackage) && ENTRY.equals(foregroundClass)) {
             playerAt = -1; confirmed = false;
             if (candidateAt < 0) candidateAt = now;
-            if (now - candidateAt < 2000 || attempts >= MAX_ATTEMPTS
-                || (lastAttemptAt >= 0 && now - lastAttemptAt < RETRY_MS)) return false;
-            attempts++; lastAttemptAt = now; candidateAt = now;
+            if (now - candidateAt < 2000 || attempts >= MAX_ATTEMPTS) return false;
+            attempts++; finished = true;
             return true;
         }
         // Boot launchers and permission screens are not evidence of a failed

@@ -77,6 +77,9 @@ public final class BridgeService extends Service {
     private CarPlayAutoEntry autoEntry;
     private StartupAudioRecovery audioRecovery;
     private WakeDiagnostics wakeDiagnostics;
+    private BluetoothMediaGuard bluetoothMedia;
+    private BluetoothMediaGuard bluetoothCalls;
+    private CarPlayCallDisplay callDisplay;
     private boolean destroyed;
     private final Runnable logChanged = () -> {
         if (!destroyed) {
@@ -95,7 +98,7 @@ public final class BridgeService extends Service {
                 clearNav(); clearMusic(); connected = false; song = null; lastUpdate = 0; updateAutoEntry();
                 if (navigationLogs != null) navigationLogs.stop();
                 if (audioRecovery != null) audioRecovery.tick(false, false, 0);
-                navigationLogs = new NavigationLogReader(BridgeService.this, handler, logChanged, audioRecovery);
+                navigationLogs = new NavigationLogReader(BridgeService.this, handler, logChanged, audioRecovery, callDisplay);
                 navigationLogs.ensureStarted();
                 receiverError = validateReceiver(); initializeHost();
             }
@@ -115,6 +118,9 @@ public final class BridgeService extends Service {
             if (!preferences.getBoolean("nav", false)) clearNav();
             forward();
             updateAutoEntry();
+            if (bluetoothMedia != null) bluetoothMedia.tick();
+            if (bluetoothCalls != null) bluetoothCalls.tick();
+            if (callDisplay != null) callDisplay.configure(receiverError == null, connected);
             if (audioRecovery != null) audioRecovery.tick(connected, song != null && song.playing, lastUpdate);
             ensureWakeDiagnostics();
             publish(); handler.postDelayed(this, 1000);
@@ -123,15 +129,21 @@ public final class BridgeService extends Service {
 
     public void onCreate() {
         super.onCreate(); preferences = getSharedPreferences("bridge", MODE_PRIVATE);
+        String oldRoadMode = preferences.getString("road_display_mode", Protocol.ROAD_ORIGINAL);
+        if ("first".equals(oldRoadMode) || "comma".equals(oldRoadMode))
+            preferences.edit().putString("road_display_mode", Protocol.ROAD_CLEAN).apply();
         autoEntry = new CarPlayAutoEntry(this);
         audioRecovery = new StartupAudioRecovery(this, preferences);
+        bluetoothMedia = new BluetoothMediaGuard(this, preferences);
+        bluetoothCalls = new BluetoothMediaGuard(this, preferences, true);
+        callDisplay = new CarPlayCallDisplay(this, preferences);
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel("bridge", "CarPlay 仪表桥接", NotificationManager.IMPORTANCE_LOW));
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         startForeground(1, new Notification.Builder(this, "bridge").setSmallIcon(android.R.drawable.ic_menu_directions)
             .setContentTitle("CarPlay 仪表桥接正在读取小组件").setContentText("打开查看状态或停止转发").setContentIntent(open).build());
         receiverError = validateReceiver();
-        navigationLogs = new NavigationLogReader(this, handler, logChanged, audioRecovery);
+        navigationLogs = new NavigationLogReader(this, handler, logChanged, audioRecovery, callDisplay);
         navigationLogs.ensureStarted();
         IntentFilter filter = new IntentFilter(); filter.addAction(Intent.ACTION_PACKAGE_REPLACED); filter.addAction(Intent.ACTION_PACKAGE_REMOVED); filter.addAction(Intent.ACTION_PACKAGE_ADDED); filter.addDataScheme("package");
         registerReceiver(packages, filter);
@@ -141,6 +153,9 @@ public final class BridgeService extends Service {
 
     public int onStartCommand(Intent intent, int flags, int id) {
         ensureWakeDiagnostics();
+        if (bluetoothMedia != null) bluetoothMedia.tick();
+        if (bluetoothCalls != null) bluetoothCalls.tick();
+        if (callDisplay != null) callDisplay.configure(receiverError == null, connected);
         if (widgetView == null) initializeHost();
         if (!preferences.getBoolean("nav", false)) clearNav();
         if (!preferences.getBoolean("music", false)) clearMusic();
@@ -338,17 +353,21 @@ public final class BridgeService extends Service {
                 candidateRoad = navigationLogs.state.road(turn, meters, System.currentTimeMillis());
                 candidateSource = candidateRoad.isEmpty() ? "缺少有效路名" : "DiPlay 导航说明（日志回退）";
             }
+            String displayRoad = Protocol.clusterRoad(candidateRoad, preferences.getString("road_display_mode", Protocol.ROAD_ORIGINAL));
+            // Keep missing data missing for the existing bounded wait. Identity
+            // follows the actual display text so toggling the option can resend.
+            String deliveryRoad = candidateRoad.isEmpty() ? "" : displayRoad;
             long now = SystemClock.elapsedRealtime();
-            NavigationDelivery.Action action = navigationDelivery.next(turn, meters, candidateRoad, now);
+            NavigationDelivery.Action action = navigationDelivery.next(turn, meters, deliveryRoad, now);
             handler.removeCallbacks(navigationRetry);
             if (action == NavigationDelivery.Action.WAIT) {
                 roadSource = "等待导航说明与小组件同步（最多 1.5 秒）";
                 handler.postDelayed(navigationRetry, navigationDelivery.retryDelay(now));
             } else if (action == NavigationDelivery.Action.SEND) {
                 if (!ownedNav) { sendBroadcast(clusterIntent("com.baidu.car.navi.STATE").putExtra("state", "TRUE")); ownedNav = true; }
-                outputRoad = Protocol.clusterRoad(candidateRoad); roadSource = candidateSource;
+                outputRoad = displayRoad; roadSource = candidateSource;
                 sendBroadcast(clusterIntent("com.baidu.car.navi.INFO").putExtra("name", turn).putExtra("distance", meters.intValue()).putExtra("nextRoadName", outputRoad)); navSent++;
-                navigationDelivery.sent(turn, meters, candidateRoad, now);
+                navigationDelivery.sent(turn, meters, deliveryRoad, now);
             } else roadSource = candidateSource;
             forwardRemaining(ownedNav);
         } else { clearNav(); outputRoad = ""; roadSource = "暂无有效导航转发"; }
@@ -428,6 +447,9 @@ public final class BridgeService extends Service {
                 !preferences.getBoolean("nav", false) ? "等待开启导航转发" : !ownedNav ? "暂无有效导航" : remainingTrip == null ? "里程/时间缺失或格式不支持" :
                 remainingTrip.meters + " 米 / " + remainingTrip.seconds / 60 + " 分钟（显示取整值）")
             + "\n自动进入 CarPlay：" + (autoEntry == null ? "未启动" : autoEntry.status())
+            + "\n蓝牙媒体音频：" + (bluetoothMedia == null ? "未启动" : bluetoothMedia.status())
+            + "\n蓝牙通话连接：" + (bluetoothCalls == null ? "未启动" : bluetoothCalls.status())
+            + "\nCarPlay 通话显示：" + (callDisplay == null ? "未启动" : callDisplay.status())
             + "\n\n" + reason
             + "\n开机自启动：" + (preferences.getBoolean("autostart", true) ? "开启" : "关闭")
             + (preferences.getString("auto_start_error", "").isEmpty() ? "" : "\n自启动失败：" + preferences.getString("auto_start_error", ""))
@@ -436,6 +458,7 @@ public final class BridgeService extends Service {
             + "\n源道路：" + (Protocol.roadName(road).isEmpty() ? "（未提供）" : road)
             + "\n源剩余信息：" + (widgetEta.isEmpty() ? "（未提供）" : widgetEta)
             + "\n路名来源：" + roadSource
+            + "\n仪表道路显示：" + (Protocol.ROAD_CLEAN.equals(Protocol.roadDisplayMode(preferences.getString("road_display_mode", Protocol.ROAD_ORIGINAL))) ? "去掉提示语，保留全部路名" : "保留原文")
             + "\n导航日志：" + (navigationLogs == null ? "未启动" : navigationLogs.status())
             + "\n导航发送：" + navSent + " 次；音乐发送：" + musicSent + " 次"
             + "\n剩余信息发送：" + remainingSent + " 次（含清除）"
@@ -459,8 +482,11 @@ public final class BridgeService extends Service {
         destroyed = true;
         handler.removeCallbacksAndMessages(null); clearNav(); clearMusic();
         if (navigationLogs != null) navigationLogs.stop();
+        if (callDisplay != null) callDisplay.close();
         if (wakeDiagnostics != null) wakeDiagnostics.close();
         if (audioRecovery != null) audioRecovery.close();
+        if (bluetoothMedia != null) bluetoothMedia.close();
+        if (bluetoothCalls != null) bluetoothCalls.close();
         stopHost(); unregisterReceiver(packages);
         preferences.edit().putString("status", "读取服务已停止，转发已关闭。下次打开应用可重新启动。").apply();
         super.onDestroy();

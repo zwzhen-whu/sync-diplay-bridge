@@ -25,17 +25,17 @@ public final class AuditRegressionTest {
         eq(boot.request(3000, "com.android.launcher", "Home"), false);
         eq(boot.request(35000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(boot.request(37000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
-        // A successful click can still be followed by DiPlay returning to its entry.
+        // A successful click ends automatic entry for this connection, including an early return.
         eq(boot.request(38000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
         eq(boot.request(41000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
-        eq(boot.request(45000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
+        eq(boot.request(45000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(boot.request(46000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
-        eq(boot.request(53000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
+        eq(boot.request(53000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(boot.request(61000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
-        eq(boot.attempts(), 3);
+        eq(boot.attempts(), 1);
         eq(boot.request(62000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
         eq(boot.request(72000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
-        eq(boot.confirmed(), true);
+        eq(boot.confirmed(), false); // A dispatched click is not a verified foreground success.
         eq(boot.request(75000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         boot.connection(false, 80000); boot.connection(true, 81000);
         eq(boot.request(84000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
@@ -44,8 +44,8 @@ public final class AuditRegressionTest {
         CarPlayEntryPolicy noClick = new CarPlayEntryPolicy(); noClick.connection(true, 0);
         eq(noClick.request(3000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(noClick.request(5000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
-        eq(noClick.request(13000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
-        eq(noClick.request(21000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
+        eq(noClick.request(13000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
+        eq(noClick.request(21000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(noClick.request(29000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         CarPlayEntryPolicy other = new CarPlayEntryPolicy(); other.connection(true, 0);
         for (int t = 3000; t < 90000; t += 1000) eq(other.request(t, "com.other", "App"), false);
@@ -55,7 +55,11 @@ public final class AuditRegressionTest {
         eq(late.request(13000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
         eq(late.confirmed(), true);
         eq(late.request(35000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
-        eq(late.request(37000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), true);
+        eq(late.request(37000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
+        // Toggling a preference or regaining usage access cannot reset an already-consumed request.
+        boot.connection(true, 87000); boot.unknownForeground();
+        eq(boot.request(88000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
+        eq(boot.request(90000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
 
         ForegroundActivityState fg = new ForegroundActivityState();
         fg.event(1, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY, BASE);
@@ -118,6 +122,6 @@ public final class AuditRegressionTest {
         eq(first.road("turn_left", 50, BASE + 1001), "下一路口");
         eq(Protocol.meters("1,2 км"), 1200); eq(Protocol.meters("200 公尺"), 200);
         eq(Protocol.meters("\u061c١٫٢\u2069 كم"), 1200);
-        System.out.println("Audit regressions passed (boot transients/retries/confirmation, clock jumps, log groups, boot cache, named fields, u16 lists, partial frames, delayed text)");
+        System.out.println("Audit regressions passed (one auto-entry per connection, stable player return, clock jumps, log groups, boot cache, named fields, u16 lists, partial frames, delayed text)");
     }
 }

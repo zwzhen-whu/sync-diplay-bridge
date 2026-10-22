@@ -82,6 +82,10 @@ public final class StartupTest {
         eq(bootRace.request(7000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         CarPlayEntryPolicy settled = new CarPlayEntryPolicy(); settled.connection(true, 0);
         eq(settled.request(3000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
+        eq(settled.request(13000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.PLAYER), false);
+        eq(settled.confirmed(), true);
+        eq(settled.request(18000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
+        eq(settled.request(20000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false);
         eq(settled.request(91000, CarPlayEntryPolicy.SOURCE, CarPlayEntryPolicy.ENTRY), false); // deliberate return after startup
         System.out.println("Startup tests passed (first song once, no repeated sends, pause/change, first-boot fallback, long-wait foreground, reconnect limits)");
     }

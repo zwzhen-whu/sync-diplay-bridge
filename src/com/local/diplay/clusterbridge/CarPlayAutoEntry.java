@@ -30,12 +30,13 @@ final class CarPlayAutoEntry {
 
     void tick(boolean enabled, boolean connected, View widgetRoot) {
         long now = SystemClock.elapsedRealtime();
-        if (!enabled) { policy.connection(false, now); foreground.clear(); status = "关闭"; return; }
-        if (!hasAccess(context)) { policy.connection(false, now); foreground.clear(); status = "请授权使用情况访问"; return; }
         policy.connection(connected, now);
+        if (!enabled) { foreground.clear(); status = "关闭"; return; }
+        if (!hasAccess(context)) { foreground.clear(); status = "请授权使用情况访问"; return; }
         if (!connected) { foreground.clear(); status = "等待 CarPlay 连接"; return; }
         if (!policy.watching(now)) {
-            status = policy.confirmed() ? "已确认 CarPlay 界面稳定显示" : "等待连接初始检查或本次检查已结束";
+            status = policy.attempts() > 0 ? "本次自动进入已结束，不再重复跳转" :
+                policy.confirmed() ? "CarPlay 已稳定显示，本次不再自动进入" : "等待连接初始检查或本次检查已结束";
             return;
         }
         try {
@@ -60,11 +61,9 @@ final class CarPlayAutoEntry {
                 policy.unknownForeground(); status = "尚未获得当前页面，等待系统前台事件"; return;
             }
             if (policy.request(now, foreground.packageName(), foreground.className())) {
-                status = (widgetRoot != null && widgetRoot.performClick() ? "已请求进入 CarPlay，等待界面确认" : "跳转入口暂不可用，稍后重试")
-                    + "（" + policy.attempts() + "/" + CarPlayEntryPolicy.MAX_ATTEMPTS + "）";
+                status = widgetRoot != null && widgetRoot.performClick() ? "已请求进入 CarPlay 一次，本次不再跳转" : "本次跳转入口不可用，不再重试，请手动进入";
                 Log.i("DiPlayBridge", "Auto-entry: " + status);
-            } else status = policy.confirmed() ? "CarPlay 界面稳定显示，继续观察首次连接回退" :
-                policy.attempts() >= CarPlayEntryPolicy.MAX_ATTEMPTS ? "已达到本次自动进入次数上限，请手动进入" : "检查首次连接页面，仅在 DiPlay 入口页请求跳转";
+            } else status = policy.confirmed() ? "CarPlay 已稳定显示，本次不再自动进入" : "检查首次连接页面，仅在 DiPlay 入口页请求跳转";
         } catch (RuntimeException e) {
             foreground.clear(); policy.unknownForeground(); status = "无法确认前台页面：" + e.getClass().getSimpleName();
         }

@@ -19,14 +19,15 @@ final class NavigationLogReader {
     private final Handler handler;
     private final Runnable changed;
     private final StartupAudioRecovery audioRecovery;
+    private final CarPlayCallDisplay callDisplay;
     private volatile Process process;
     private volatile Thread worker;
     private volatile boolean stopped;
     private volatile String status = "等待日志授权";
     private final int bootCount;
 
-    NavigationLogReader(Context context, Handler handler, Runnable changed, StartupAudioRecovery audioRecovery) {
-        this.context = context; this.handler = handler; this.changed = changed; this.audioRecovery = audioRecovery;
+    NavigationLogReader(Context context, Handler handler, Runnable changed, StartupAudioRecovery audioRecovery, CarPlayCallDisplay callDisplay) {
+        this.context = context; this.handler = handler; this.changed = changed; this.audioRecovery = audioRecovery; this.callDisplay = callDisplay;
         int boot;
         try { boot = Settings.Global.getInt(context.getContentResolver(), "boot_count", -1); }
         catch (RuntimeException e) { boot = -1; }
@@ -66,6 +67,7 @@ final class NavigationLogReader {
                     String line;
                     while (!stopped && (line = reader.readLine()) != null) {
                         if (audioRecovery != null) audioRecovery.acceptLog(line, uid);
+                        if (callDisplay != null) callDisplay.acceptLog(line, uid);
                         synchronized (NavigationLogReader.this) {
                             if (stopped) break;
                             boolean updated = state.accept(line, uid, System.currentTimeMillis());
@@ -82,6 +84,7 @@ final class NavigationLogReader {
                 if (!stopped) status = "日志读取中断，将重试";
             } catch (Exception e) { status = "读取失败：" + e.getClass().getSimpleName(); }
             finally {
+                if (callDisplay != null) callDisplay.sourceInterrupted();
                 Process child = process; if (child != null) child.destroy(); process = null;
                 synchronized (NavigationLogReader.this) { worker = null; }
             }
@@ -95,6 +98,7 @@ final class NavigationLogReader {
             .remove("navigation_cache").remove("navigation_cache_uid").remove("navigation_cache_boot").apply();
     }
     synchronized void stop() {
+        if (callDisplay != null) callDisplay.sourceInterrupted();
         stopped = true; Process child = process; if (child != null) child.destroy(); state.clear(); handler.removeCallbacks(changed);
     }
 }
