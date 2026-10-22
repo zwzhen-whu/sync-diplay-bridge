@@ -25,7 +25,7 @@ jobs:
           python3 - <<'PYCODE'
           import os, re, xml.etree.ElementTree as ET
           version = ET.parse('AndroidManifest.xml').getroot().get('{http://schemas.android.com/apk/res/android}versionName')
-          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Invalid manifest version'
+          assert re.fullmatch(r'\d+\.\d+(?:\.\d+)?', version), 'Invalid manifest version'
           assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'Tag must match manifest version'
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write('BRIDGE_RELEASE_VERSION=' + version + '\n')

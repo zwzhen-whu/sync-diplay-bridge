@@ -1,6 +1,10 @@
 # Sync+ / DiPlay CarPlay 仪表桥接
 
-包名：`com.local.diplay.clusterbridge`，当前代码版本为 0.1.16。0.1.13 已于 2026-10-22 按用户停车授权以原签名覆盖安装并完成蓝牙媒体插拔验证；0.1.14 修正“去往”提示词，0.1.15 按用户最新要求改为去掉开头提示语并保留全部路名。已发布安装包版本为 0.1.10。较早实车验证和未解决问题见[四项故障排查记录](docs/FOUR_ISSUES_0.1.10.md)。界面为深色，最低 Android 8.0。保留仪表应用及车机助手的签名检查；其他车型和固件兼容性尚未验证。
+包名：`com.local.diplay.clusterbridge`，当前代码版本为 1.0。0.1.13 已于 2026-10-22 按用户停车授权以原签名覆盖安装并完成蓝牙媒体插拔验证；0.1.14 修正“去往”提示词，0.1.15 按用户最新要求改为去掉开头提示语并保留全部路名。仓库安装包同步更新为 1.0。较早实车验证和未解决问题见[四项故障排查记录](docs/FOUR_ISSUES_0.1.10.md)。界面为深色，最低 Android 8.0。保留仪表应用及车机助手的签名检查；其他车型和固件兼容性尚未验证。
+
+## 1.0
+
+按用户要求，将已验证的 0.1.16 功能版本号统一改为 1.0，versionCode 递增至 18，支持原签名覆盖升级。功能和现有设置保持。
 
 ## 0.1.16 CarPlay 通话仪表显示
 
@@ -132,7 +136,7 @@ ADB 安装和绑定：
 
 ```sh
 adb connect <车机IP>:5555
-adb install -r DiPlayClusterBridge-0.1.10.apk
+adb install -r DiPlayClusterBridge-1.0.apk
 adb shell appwidget grantbind --package com.local.diplay.clusterbridge --user 0
 adb shell pm grant com.local.diplay.clusterbridge android.permission.READ_LOGS
 adb shell am force-stop com.local.diplay.clusterbridge
@@ -192,6 +196,10 @@ export BRIDGE_KEY_PASSWORD='your-key-password'
 编译输出为 `build/DiPlayClusterBridge.apk`。构建不会自动创建签名密钥；签名私钥不在仓库中。使用其他密钥构建的 APK 无法直接覆盖本仓库发布的 APK。维护者后续发布会继续使用原签名，保留覆盖更新能力。
 
 ## 下载与发布验证
+
+当前 1.0：[安装包](release/1.0/DiPlayClusterBridge-1.0.apk)、[校验值](release/1.0/SHA256SUMS)、[版本说明](release/1.0/NOTES.md)。原签名构建，versionCode 18，十五组回归通过。1.0 只调整已验证候选的版本号与页面版本显示，未再次安装到车机。
+
+以下为历史发布记录：
 
 [v0.1.10 发布页](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.10)提供 [APK 安装包](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/download/v0.1.10/DiPlayClusterBridge-0.1.10.apk)和 `SHA256SUMS`。发布文件与 2026-10-19 本车完整冷启动自动恢复声音时实际安装的 APK 完全一致，沿用原签名，可覆盖更新并保留配置。为保留实测构建，界面版本栏仍带“测试”字样；首次无声恢复及临时诊断默认关闭。历史版本：[v0.1.9](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.9)、[v0.1.8](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.8)、[v0.1.7](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.7)、[v0.1.5](https://github.com/zwzhen-whu/sync-diplay-bridge/releases/tag/v0.1.5)。
 

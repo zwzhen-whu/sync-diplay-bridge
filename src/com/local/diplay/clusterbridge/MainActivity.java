@@ -151,7 +151,7 @@ public final class MainActivity extends Activity {
         limits.setPadding(0, dp(12), 0, 0); body.addView(limits);
         ScrollView statusScroll = new ScrollView(this); statusScroll.setBackground(panel());
         LinearLayout statusBody = new LinearLayout(this); statusBody.setOrientation(LinearLayout.VERTICAL); statusBody.setPadding(dp(20), dp(14), dp(20), dp(18));
-        statusBody.addView(label("运行状态 · 0.1.16 测试", 20, "#61D9BB"));
+        statusBody.addView(label("运行状态 · 1.0", 20, "#61D9BB"));
         status = label("正在读取…", 18, "#E8EDF5"); status.setPadding(0, dp(10), 0, 0); status.setLineSpacing(dp(3), 1); status.setTextIsSelectable(true);
         statusBody.addView(status); statusScroll.addView(statusBody);
         columns.addView(statusScroll, new LinearLayout.LayoutParams(0, -1, 0.56f));
