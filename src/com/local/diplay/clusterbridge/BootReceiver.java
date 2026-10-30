@@ -13,11 +13,13 @@ public final class BootReceiver extends BroadcastReceiver {
         if (!Intent.ACTION_BOOT_COMPLETED.equals(action) && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) return;
         SharedPreferences preferences = context.getSharedPreferences("bridge", Context.MODE_PRIVATE);
         if (!preferences.getBoolean("autostart", true)) {
+            com.local.diplay.clusterbridge.homemap.HomeMapController.restoreIfEnabled(context);
             Log.i("DiPlayBridge", "Auto-start disabled; ignored " + action);
             return;
         }
         try {
             context.startForegroundService(new Intent(context, BridgeService.class));
+            com.local.diplay.clusterbridge.homemap.HomeMapController.restoreIfEnabled(context);
             preferences.edit().putString("last_auto_start", action).putString("auto_start_error", "").apply();
             Log.i("DiPlayBridge", "Auto-start requested: " + action);
         } catch (RuntimeException e) {

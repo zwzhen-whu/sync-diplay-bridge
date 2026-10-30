@@ -19,7 +19,7 @@ final class CarPlayCallDisplay {
     private final CarPlayCallState state = new CarPlayCallState();
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledFuture<?> task;
-    private volatile boolean enabled, connected, stopped;
+    private volatile boolean enabled, tracking, connected, stopped;
     private volatile String status = "关闭";
     private LocalAdbShell shell;
     private long retryAfter;
@@ -32,13 +32,16 @@ final class CarPlayCallDisplay {
     }
     synchronized void configure(boolean allowed, boolean carplayConnected) {
         boolean next = !stopped && allowed && preferences.getBoolean(ENABLED, false);
-        if (next != enabled || connected && !carplayConnected) state.reset(System.currentTimeMillis());
+        boolean nextTracking = !stopped && allowed && (next || preferences.getBoolean(BridgeMediaKeys.ENABLED, false));
+        if (nextTracking != tracking || connected && !carplayConnected) state.reset(System.currentTimeMillis());
+        tracking = nextTracking;
         enabled = next; connected = carplayConnected;
     }
     void acceptLog(String line, int uid) {
-        if (enabled && connected && !stopped) state.accept(line, uid, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        if (tracking && connected && !stopped) state.accept(line, uid, System.currentTimeMillis(), SystemClock.elapsedRealtime());
     }
     void sourceInterrupted() { state.reset(System.currentTimeMillis()); }
+    MediaKeyPolicy.Snapshot keySnapshot() { return state.keySnapshot(); }
     String status() { return status; }
     private void tick() {
         try {
@@ -95,7 +98,7 @@ final class CarPlayCallDisplay {
     private static void requireOk(String response) { if (!"OK".equals(response)) throw new IllegalStateException("Display acknowledgement unavailable"); }
     private static String encode(String value) { return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8)); }
     synchronized void close() {
-        stopped = true; enabled = false; state.reset(System.currentTimeMillis()); task.cancel(false);
+        stopped = true; enabled = false; tracking = false; state.reset(System.currentTimeMillis()); task.cancel(false);
         worker.execute(this::tick); worker.shutdown();
     }
 }

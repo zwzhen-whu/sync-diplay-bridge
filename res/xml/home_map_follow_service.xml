@@ -1,0 +1,9 @@
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewScrolled|typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
+    android:packageNames="com.baidu.xiaoduos.launcher"
+    android:notificationTimeout="0"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/home_map_follow_description"
+    android:settingsActivity="com.local.diplay.clusterbridge.homemap.MapSettingsActivity" />

@@ -1,0 +1,5 @@
+Unmodified Frida inject 16.7.19, Android arm64
+https://github.com/frida/frida/releases/tag/16.7.19
+https://github.com/frida/frida-core/tree/16.7.19
+https://github.com/frida/frida-gum/tree/16.7.19
+Binary SHA256: 5e5ad93e0f12538829b5f98fb65f1056a72da5f1eb380ada1ddf8a89716b5cc9

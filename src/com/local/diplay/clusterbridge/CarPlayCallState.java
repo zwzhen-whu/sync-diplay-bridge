@@ -13,12 +13,15 @@ public final class CarPlayCallState {
     private static final Pattern PARAM = Pattern.compile("\\s*\\[(\\d+)\\] [^:\\r\\n]{1,80}: (.*)");
     private static final Pattern SCALAR = Pattern.compile("u8=([0-6]) \\(0x0[0-6]\\)");
     private static final Pattern CLOSE = Pattern.compile("IAP2 CLOSE \\[([^\\]]+)\\].*");
+    private static final Pattern SESSION = Pattern.compile("IAP2 RX \\[([^\\]]{1,80})\\].*");
     private final Map<String, Frame> pending = new HashMap<>();
     private final LinkedHashMap<String, Call> calls = new LinkedHashMap<>();
     private final LinkedHashMap<String, Long> ended = new LinkedHashMap<>();
     private final LinkedHashMap<String, Long> closed = new LinkedHashMap<>();
-    private long floor, latestWall, lastNow;
+    private long floor, latestWall, lastNow, generation;
     private int sourcePid = -1, parsed;
+    private String sourceSession;
+    private boolean transportActive;
 
     public static final class Call {
         public final String key, name, number;
@@ -37,9 +40,17 @@ public final class CarPlayCallState {
     }
 
     public synchronized void reset(long now) {
-        pending.clear(); calls.clear(); ended.clear(); closed.clear(); sourcePid = -1; floor = now; latestWall = now; lastNow = now;
+        generation++;
+        pending.clear(); calls.clear(); ended.clear(); closed.clear(); sourcePid = -1; sourceSession = null; transportActive = false;
+        floor = now; latestWall = now; lastNow = now;
     }
     public synchronized int framesParsed() { return parsed; }
+    public synchronized MediaKeyPolicy.Snapshot keySnapshot() {
+        Call call = current();
+        return new MediaKeyPolicy.Snapshot(generation, call == null ? transportActive ? sourcePid : -1 : call.pid,
+            !pending.isEmpty() ? 6 : call == null ? 0 : call.status,
+            MediaKeyPolicy.hash(call == null ? null : call.key));
+    }
     public synchronized Call current() {
         for (int wanted : new int[]{2, 4, 5, 1, 3})
             for (Call call : calls.values()) if (call.status == wanted) return call;
@@ -60,6 +71,8 @@ public final class CarPlayCallState {
             String thread = pid + ":" + log.group(5), message = log.group(7);
             Matcher close = CLOSE.matcher(message);
             if (close.matches()) {
+                generation++;
+                if (pid == sourcePid && close.group(1).equals(sourceSession)) transportActive = false;
                 String prefix = pid + ":" + close.group(1) + ":";
                 if (closed.size() >= 8) closed.remove(closed.keySet().iterator().next());
                 closed.put(prefix, Math.max(wall, closed.containsKey(prefix) ? closed.get(prefix) : 0));
@@ -68,13 +81,20 @@ public final class CarPlayCallState {
             }
             if (message.startsWith("IAP2 RX")) {
                 pending.remove(thread);
+                Matcher session = SESSION.matcher(message);
+                if (!session.matches()) return false;
+                String sessionPrefix = pid + ":" + session.group(1) + ":";
+                if (closed.containsKey(sessionPrefix) && wall <= closed.get(sessionPrefix)) return false;
                 if (pid != sourcePid && wall >= latestWall) {
+                    generation++;
                     boolean hadCalls = !calls.isEmpty(); calls.clear(); ended.clear(); closed.clear(); pending.clear(); sourcePid = pid; latestWall = wall;
+                    sourceSession = session.group(1); transportActive = true;
                     Matcher begin = FRAME.matcher(message);
                     if (begin.matches()) begin(thread, begin.group(1), Integer.parseInt(begin.group(2)), pid, wall);
                     return hadCalls;
                 }
                 if (pid != sourcePid) return false;
+                sourceSession = session.group(1); transportActive = true;
                 Matcher begin = FRAME.matcher(message);
                 if (begin.matches()) begin(thread, begin.group(1), Integer.parseInt(begin.group(2)), pid, wall);
                 return false;
@@ -95,6 +115,7 @@ public final class CarPlayCallState {
     private void begin(String thread, String session, int count, int pid, long wall) {
         if (count < 2 || count > 20) return;
         if (pending.size() >= 8) pending.clear();
+        generation++;
         Frame frame = new Frame(); frame.session = session; frame.count = count; frame.pid = pid; frame.wall = wall; pending.put(thread, frame);
     }
     private boolean commit(Frame frame, long elapsed) {

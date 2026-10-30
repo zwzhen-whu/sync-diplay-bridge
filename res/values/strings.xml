@@ -1,0 +1,4 @@
+<resources>
+    <string name="home_map_follow_label">桌面地图跟随</string>
+    <string name="home_map_follow_description">仅处理原车桌面的滚动位置，让 CarPlay 地图随桌面左右移动。请同时打开桥接应用中的“跟随桌面滑动”开关。</string>
+</resources>

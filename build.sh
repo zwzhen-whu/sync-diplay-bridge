@@ -28,13 +28,14 @@ test -f "$BRIDGE_JAR" || { echo 'Missing Android SDK platform 35.' >&2; exit 1; 
 rm -rf "$BRIDGE_BUILD/classes" "$BRIDGE_BUILD/dex"
 rm -f "$BRIDGE_BUILD/classes.jar"
 mkdir -p "$BRIDGE_BUILD/classes" "$BRIDGE_BUILD/dex"
-find "$BRIDGE_SOURCE/src" -name '*.java' -print > "$BRIDGE_BUILD/sources.txt"
+python3 "$BRIDGE_SOURCE/prepare_homemap_runtime.py"
+find "$BRIDGE_SOURCE/src" "$BRIDGE_BUILD/generated" -name '*.java' -print > "$BRIDGE_BUILD/sources.txt"
 "$BRIDGE_JAVAC" --release 8 -encoding UTF-8 -classpath "$BRIDGE_JAR" -d "$BRIDGE_BUILD/classes" @"$BRIDGE_BUILD/sources.txt"
 "$BRIDGE_SOURCE/test.sh"
 (cd "$BRIDGE_BUILD/classes" && zip -qr "$BRIDGE_BUILD/classes.jar" .)
 "$BRIDGE_TOOLS/d8" --min-api 26 --lib "$BRIDGE_JAR" --output "$BRIDGE_BUILD/dex" "$BRIDGE_BUILD/classes.jar"
 "$BRIDGE_TOOLS/aapt2" compile --dir "$BRIDGE_SOURCE/res" -o "$BRIDGE_BUILD/resources.zip"
-"$BRIDGE_TOOLS/aapt2" link -I "$BRIDGE_JAR" --manifest "$BRIDGE_SOURCE/AndroidManifest.xml" --min-sdk-version 26 --target-sdk-version 28 -o "$BRIDGE_BUILD/unsigned.apk" "$BRIDGE_BUILD/resources.zip"
+"$BRIDGE_TOOLS/aapt2" link -I "$BRIDGE_JAR" --manifest "$BRIDGE_SOURCE/AndroidManifest.xml" --min-sdk-version 26 --target-sdk-version 28 -A "$BRIDGE_BUILD/homemap-assets" -o "$BRIDGE_BUILD/unsigned.apk" "$BRIDGE_BUILD/resources.zip"
 (cd "$BRIDGE_BUILD/dex" && zip -q "$BRIDGE_BUILD/unsigned.apk" classes.dex)
 "$BRIDGE_TOOLS/zipalign" -f 4 "$BRIDGE_BUILD/unsigned.apk" "$BRIDGE_BUILD/aligned.apk"
 "$BRIDGE_TOOLS/apksigner" sign --ks "$BRIDGE_KEY" --ks-key-alias "$BRIDGE_ALIAS" --ks-pass env:BRIDGE_STORE_PASSWORD --key-pass env:BRIDGE_KEY_PASSWORD --out "$BRIDGE_BUILD/DiPlayClusterBridge.apk" "$BRIDGE_BUILD/aligned.apk"

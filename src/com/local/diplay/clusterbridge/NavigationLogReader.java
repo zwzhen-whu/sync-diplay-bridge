@@ -20,14 +20,16 @@ final class NavigationLogReader {
     private final Runnable changed;
     private final StartupAudioRecovery audioRecovery;
     private final CarPlayCallDisplay callDisplay;
+    private final VehicleDiagnostics diagnostics;
     private volatile Process process;
     private volatile Thread worker;
     private volatile boolean stopped;
     private volatile String status = "等待日志授权";
     private final int bootCount;
 
-    NavigationLogReader(Context context, Handler handler, Runnable changed, StartupAudioRecovery audioRecovery, CarPlayCallDisplay callDisplay) {
+    NavigationLogReader(Context context, Handler handler, Runnable changed, StartupAudioRecovery audioRecovery, CarPlayCallDisplay callDisplay, VehicleDiagnostics diagnostics) {
         this.context = context; this.handler = handler; this.changed = changed; this.audioRecovery = audioRecovery; this.callDisplay = callDisplay;
+        this.diagnostics = diagnostics;
         int boot;
         try { boot = Settings.Global.getInt(context.getContentResolver(), "boot_count", -1); }
         catch (RuntimeException e) { boot = -1; }
@@ -66,6 +68,7 @@ final class NavigationLogReader {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(child.getInputStream(), "UTF-8"))) {
                     String line;
                     while (!stopped && (line = reader.readLine()) != null) {
+                        if (diagnostics != null) diagnostics.source(line, uid);
                         if (audioRecovery != null) audioRecovery.acceptLog(line, uid);
                         if (callDisplay != null) callDisplay.acceptLog(line, uid);
                         synchronized (NavigationLogReader.this) {

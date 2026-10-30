@@ -14,7 +14,7 @@ import java.util.ArrayDeque;
 
 /** One fixed helper on this head unit's existing loopback ADB. No keys, pairing or remote hosts. */
 final class LocalAdbShell implements AutoCloseable {
-    private final Socket socket = new Socket();
+    private final Socket socket;
     private DataInputStream input;
     private OutputStream output;
     private int remote;
@@ -25,15 +25,24 @@ final class LocalAdbShell implements AutoCloseable {
     private static final class Packet { int command, arg0, arg1; byte[] data; }
 
     LocalAdbShell(String apk) throws IOException {
+        this(apk, false);
+    }
+    LocalAdbShell(String apk, boolean mediaKeys) throws IOException {
+        this(apk, mediaKeys, new Socket());
+    }
+    // Package-private transport injection for offline protocol tests; production always uses loopback.
+    LocalAdbShell(String apk, boolean mediaKeys, Socket connection) throws IOException {
+        socket = connection;
         try {
             socket.connect(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 5555), 2000);
-            socket.setSoTimeout(3000); socket.setTcpNoDelay(true);
+            socket.setSoTimeout(mediaKeys ? 4500 : 3000); socket.setTcpNoDelay(true);
             input = new DataInputStream(socket.getInputStream()); output = socket.getOutputStream();
             send(CNXN, 0x01000000, 4096, "host::\0".getBytes(StandardCharsets.UTF_8));
             Packet hello = read();
             if (hello.command == AUTH) throw new IOException("ADB authorization required");
             if (hello.command != CNXN) throw new IOException("ADB handshake failed");
-            String shell = "su 0 sh -c " + quote("CLASSPATH=" + quote(apk) + " app_process /system/bin com.local.diplay.clusterbridge.CallDisplayTool");
+            String helper = mediaKeys ? "KeyControlTool" : "CallDisplayTool";
+            String shell = "su 0 sh -c " + quote("CLASSPATH=" + quote(apk) + " app_process /system/bin com.local.diplay.clusterbridge." + helper);
             send(OPEN, 1, 0, ("shell:" + shell + "\0").getBytes(StandardCharsets.UTF_8));
             Packet opened = read();
             if (opened.command != OKAY || opened.arg1 != 1) throw new IOException("ADB shell unavailable");
@@ -58,7 +67,7 @@ final class LocalAdbShell implements AutoCloseable {
         for (int i = 0; i < 24; i++) {
             while (!lines.isEmpty()) {
                 String line = lines.removeFirst().trim();
-                if (line.equals("READY") || line.equals("OK") || line.equals("HANDOFF") || line.startsWith("ERR ")) return line;
+                if (line.equals("READY") || line.equals("OK") || line.equals("HANDOFF") || line.startsWith("RESULT ") || line.startsWith("ERR ")) return line;
             }
             consume(read());
         }
